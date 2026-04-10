@@ -1,0 +1,21 @@
+[project]
+name = "lokiwiki"
+version = "0.1.0"
+description = "Local LLM Wiki with Obsidian compatibility"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "ollama>=0.4",
+    "python-frontmatter>=1.0",
+    "PyYAML>=6.0",
+    "pypdf>=5.0",
+    "rich>=13.0",
+]
+
+[project.scripts]
+lokiwiki = "lokiwiki.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lokiwiki*"]   # Only include the lokiwiki package and its subpackages
+exclude = ["configs*", "prompts*", "examples*", "tests*"]  # Ignore helper folders
