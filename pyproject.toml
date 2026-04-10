@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "lokiwiki"
 version = "0.1.0"
-description = "Local LLM Wiki with Obsidian compatibility"
+description = "Fully local Karpathy LLM Wiki with native Obsidian support"
 requires-python = ">=3.11"
 dependencies = [
     "typer>=0.12",
@@ -16,6 +20,4 @@ dependencies = [
 lokiwiki = "lokiwiki.cli:app"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["lokiwiki*"]   # Only include the lokiwiki package and its subpackages
-exclude = ["configs*", "prompts*", "examples*", "tests*"]  # Ignore helper folders
+where = ["src"]
