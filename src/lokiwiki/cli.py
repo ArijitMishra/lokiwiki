@@ -1,6 +1,8 @@
 import typer
 from pathlib import Path
+from datetime import date
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
 
@@ -132,15 +134,103 @@ Check for:
     (vault_path / "config" / "agents.md").write_text(agents_content, encoding="utf-8")
 
     console.print(f"[green]✅ Vault created:[/green] {vault_path}")
+    console.print("→ Open this folder in Obsidian")
+    console.print("→ Then run: lokiwiki ingest <path-to-file>")
 
 @app.command()
 def ingest(
-    source_path: str = typer.Argument(..., help="Path to file or folder to ingest (PDF, TXT, MD, etc.)")
+    source_path: str = typer.Argument(..., help="Path to the file to ingest (PDF, TXT, MD)"),
+    vault:       str = typer.Option("my-wiki", "--vault", "-v", help="Path to your vault folder"),
+    model:       str = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model to use"),
 ):
-    """Ingest a document into the wiki using the LLM (Obsidian compatible)."""
-    console.print(f"[blue]🚀 Ingesting:[/blue] {source_path}")
-    # TODO: Implement full logic in next step
-    console.print("[yellow]Ingest command skeleton ready. Full implementation coming next.[/yellow]")
+    """Ingest a document into the wiki. The LLM reads it and updates wiki pages."""
+    from lokiwiki.core.files import (
+        read_source, copy_to_raw, load_index,
+        write_wiki_page, update_index, append_log
+    )
+    from lokiwiki.core.llm import LLM
+
+    vault_path = Path(vault).resolve()
+    if not vault_path.exists():
+        console.print(f"[red]Vault not found:[/red] {vault_path}")
+        console.print("Run `lokiwiki init` first.")
+        raise typer.Exit(1)
+
+    # Step 1: Read the source file
+    console.print(f"[blue]📄 Reading source:[/blue] {source_path}")
+    try:
+        source_text, filename = read_source(source_path)
+    except (FileNotFoundError, ValueError, ImportError) as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+    # Step 2: Copy into raw/
+    copy_to_raw(source_path, vault_path)
+    console.print(f"[dim]→ Copied to raw/{filename}[/dim]")
+
+    # Step 3: Load current wiki state
+    index = load_index(vault_path)
+    today = date.today().isoformat()
+
+    # Step 4: Call the LLM
+    llm = LLM(model=model)
+    console.print(f"[blue]🤖 Sending to LLM ({model})...[/blue]")
+    console.print("[dim]   This may take 30–90 seconds on a laptop.[/dim]")
+
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+        progress.add_task("LLM is reading and synthesizing...", total=None)
+        try:
+            result = llm.ingest(source_text, filename, index, today)
+        except Exception as e:
+            console.print(f"[red]LLM error:[/red] {e}")
+            console.print("[dim]Is Ollama running? Try: ollama serve[/dim]")
+            raise typer.Exit(1)
+
+    # Step 5: Write wiki pages
+    pages = result.get("pages", [])
+    console.print(f"[green]✅ LLM returned {len(pages)} page(s) to write.[/green]")
+
+    for page in pages:
+        filename_out = page.get("filename", "untitled.md")
+        fm = page.get("frontmatter", {})
+        body = page.get("content", "")
+
+        # Build YAML frontmatter manually (keeps it readable)
+        tags_str = "[" + ", ".join(fm.get("tags", [])) + "]"
+        related_str = "[" + ", ".join(f'"{r}"' for r in fm.get("related", [])) + "]"
+        sources_str = "[" + ", ".join(f'"{s}"' for s in fm.get("sources", [])) + "]"
+
+        full_content = f"""---
+title: "{fm.get('title', filename_out)}"
+tags: {tags_str}
+created: "{fm.get('created', today)}"
+updated: "{fm.get('updated', today)}"
+sources: {sources_str}
+related: {related_str}
+---
+
+{body}
+"""
+        write_wiki_page(vault_path, filename_out, full_content)
+        console.print(f"   [dim]Wrote:[/dim] wiki/{filename_out}")
+
+    # Step 6: Update index and log
+    if result.get("index_update"):
+        update_index(vault_path, result["index_update"])
+        console.print("[dim]→ index.md updated[/dim]")
+
+    if result.get("log_entry"):
+        append_log(vault_path, result["log_entry"])
+        console.print("[dim]→ log.md updated[/dim]")
+
+    # Report any contradictions the LLM flagged
+    contradictions = result.get("contradictions", [])
+    if contradictions:
+        console.print("\n[yellow]⚠️  Contradictions flagged by LLM:[/yellow]")
+        for c in contradictions:
+            console.print(f"   • {c}")
+
+    console.print(f"\n[green]✅ Ingest complete.[/green] Open your vault in Obsidian to explore.")
 
 if __name__ == "__main__":
     app()
