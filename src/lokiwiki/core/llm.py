@@ -44,6 +44,49 @@ Analyze this source and return a JSON object with the following structure:
 - Create 3-6 pages maximum per ingest.
 """
 
+QUERY_PROMPT_TEMPLATE = """You are a knowledgeable wiki assistant. Answer the user's question using only the wiki pages provided.
+
+## Wiki Pages
+{pages_content}
+
+## Question
+{question}
+
+## Instructions
+- Answer clearly and concisely using information from the wiki pages above.
+- Cite your sources using [[Wikilink]] format when referencing specific pages.
+- If the answer requires information not present in the wiki, say so explicitly.
+- At the end, list which pages you used under a ## Sources section.
+- Return a JSON object with this structure:
+
+{{
+  "answer": "Your full markdown answer here, using [[Wikilinks]] for citations.",
+  "sources": ["Concepts/Page_One.md", "Concepts/Page_Two.md"],
+  "save_as": "Suggested_Filename.md"
+}}
+
+Return ONLY the JSON. No preamble, no markdown fences.
+"""
+
+RELEVANCE_PROMPT_TEMPLATE = """You are a wiki search assistant. Given an index of wiki pages and a question, return the filenames of the most relevant pages.
+
+## Wiki Index
+{index}
+
+## Question
+{question}
+
+## Instructions
+- Return the filenames of pages most likely to help answer the question.
+- If no pages are a perfect match, return the ones that are closest in topic.
+- Always return at least 1 page unless the index is completely empty.
+- Maximum 5 pages.
+
+Return a JSON array of filenames. Example:
+["Concepts/Attention.md", "Sources/Paper.md"]
+
+Return ONLY the JSON array. No explanation.
+"""
 
 def _clean_llm_output(raw: str) -> str:
     """
@@ -137,3 +180,44 @@ class LLM:
                 f"LLM returned invalid JSON: {e}\n"
                 f"Raw output saved to llm_raw_output.txt for inspection."
             )
+
+    def find_relevant_pages(self, index: str, question: str) -> list[str]:
+            """Ask the LLM which pages in the index are relevant to the question."""
+            prompt = RELEVANCE_PROMPT_TEMPLATE.format(index=index, question=question)
+            response = ollama.chat(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0},
+            )
+            raw = response["message"]["content"]
+            cleaned = _clean_llm_output(raw)
+            start = cleaned.find("[")
+            end = cleaned.rfind("]")
+            if start != -1 and end != -1:
+                result = json.loads(cleaned[start:end+1])
+                if result:  # only return if non-empty
+                    return result
+
+            # Fallback: extract all filenames directly from the index
+            import re
+            filenames = re.findall(r'\(([^)]+\.md)\)', index)
+            return filenames[:5]  # cap at 5
+
+    def query(self, question: str, pages_content: str) -> dict:
+        """Answer a question using the provided wiki page content."""
+        prompt = QUERY_PROMPT_TEMPLATE.format(
+            question=question,
+            pages_content=pages_content,
+        )
+        response = ollama.chat(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0, "num_predict": 2000},
+        )
+        raw = _clean_llm_output(response["message"]["content"])
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            with open("llm_query_raw.txt", "w") as f:
+                f.write(response["message"]["content"])
+            raise ValueError(f"LLM returned invalid JSON: {e}\nRaw output saved to llm_query_raw.txt")

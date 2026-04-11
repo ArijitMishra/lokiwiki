@@ -278,5 +278,81 @@ def config(
     else:
         console.print("[yellow]No config found. Run `lokiwiki init <path>` to set a default vault.[/yellow]")
 
+@app.command()
+def query(
+    question: str = typer.Argument(..., help="Question to ask your wiki"),
+    vault:    str = typer.Option(None, "--vault", "-v", help="Vault path (uses default if not set)"),
+    model:    str = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model to use"),
+    save:     bool = typer.Option(False, "--save", "-s", help="Save the answer as a new wiki page"),
+):
+    """Ask a question and get an answer synthesized from your wiki."""
+    from lokiwiki.core.files import load_index, load_wiki_pages, write_wiki_page, append_log
+    from lokiwiki.core.llm import LLM
+
+    vault_path = get_vault(vault)
+    index = load_index(vault_path)
+    llm = LLM(model=model)
+
+    # Step 1: Find relevant pages
+    console.print(f"[blue]🔍 Finding relevant pages...[/blue]")
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+        progress.add_task("Searching index...", total=None)
+        relevant = llm.find_relevant_pages(index, question)
+
+    if not relevant:
+        console.print("[yellow]No relevant pages found in the wiki. Try ingesting more documents first.[/yellow]")
+        raise typer.Exit()
+
+    console.print(f"[dim]Relevant pages: {', '.join(relevant)}[/dim]")
+
+    # Step 2: Load those pages
+    pages_content = load_wiki_pages(vault_path, relevant)
+    if not pages_content:
+        console.print("[yellow]Could not load page content.[/yellow]")
+        raise typer.Exit()
+
+    # Step 3: Get the answer
+    console.print(f"[blue]🤖 Synthesizing answer...[/blue]")
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+        progress.add_task("LLM is thinking...", total=None)
+        try:
+            result = llm.query(question, pages_content)
+        except Exception as e:
+            console.print(f"[red]LLM error:[/red] {e}")
+            raise typer.Exit(1)
+
+    # Step 4: Print the answer
+    console.print("\n" + "─" * 60)
+    console.print(f"[bold]Q: {question}[/bold]\n")
+    console.print(result.get("answer", "No answer returned."))
+    console.print("\n[dim]Sources: " + ", ".join(result.get("sources", [])) + "[/dim]")
+    console.print("─" * 60)
+
+    # Step 5: Optionally save as wiki page
+    if save or typer.confirm("\nSave this answer as a wiki page?", default=False):
+        today = date.today().isoformat()
+        suggested = result.get("save_as", "Queries/Answer.md")
+        filename = f"Queries/{suggested}" if "/" not in suggested else suggested
+
+        content = f"""---
+title: "{question}"
+tags: [query, answer]
+created: "{today}"
+updated: "{today}"
+sources: {json.dumps(result.get("sources", []))}
+related: []
+---
+
+**Q: {question}**
+
+{result.get("answer", "")}
+
+## Sources
+{chr(10).join(f"- [[{s}]]" for s in result.get("sources", []))}
+"""
+        write_wiki_page(vault_path, filename, content)
+        append_log(vault_path, f"## [{today}] query | {question}\n\nSaved as {filename}.")
+        console.print(f"[green]✅ Saved to wiki/{filename}[/green]")        
+
 if __name__ == "__main__":
     app()

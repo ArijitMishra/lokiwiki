@@ -69,3 +69,19 @@ def append_log(vault_path: Path, entry: str):
     log_file = vault_path / "log.md"
     existing = log_file.read_text(encoding="utf-8") if log_file.exists() else "# Activity Log\n\n"
     log_file.write_text(existing + entry + "\n\n", encoding="utf-8")
+
+def load_wiki_pages(vault_path: Path, filenames: list[str]) -> str:
+    """Load the content of specific wiki pages and return as a combined string."""
+    combined = []
+    for filename in filenames:
+        page_path = vault_path / "wiki" / filename
+        if page_path.exists():
+            content = page_path.read_text(encoding="utf-8")
+            combined.append(f"### {filename}\n\n{content}")
+        else:
+            # Try without the subdirectory prefix
+            for found in (vault_path / "wiki").rglob(Path(filename).name):
+                content = found.read_text(encoding="utf-8")
+                combined.append(f"### {filename}\n\n{content}")
+                break
+    return "\n\n---\n\n".join(combined)
