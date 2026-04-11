@@ -3,8 +3,36 @@ from pathlib import Path
 from datetime import date
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
+import json
 
 console = Console()
+
+# Config file lives at ~/.lokiwiki/config.json
+CONFIG_DIR = Path.home() / ".lokiwiki"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+
+def save_config(vault_path: str):
+    CONFIG_DIR.mkdir(exist_ok=True)
+    config = {"default_vault": str(vault_path)}
+    CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+
+def load_config() -> dict:
+    if CONFIG_FILE.exists():
+        return json.loads(CONFIG_FILE.read_text())
+    return {}
+
+
+def get_vault(vault_override: str | None) -> Path:
+    if vault_override:
+        return Path(vault_override).resolve()
+    config = load_config()
+    if "default_vault" in config:
+        return Path(config["default_vault"])
+    console.print("[red]No vault specified.[/red]")
+    console.print("Run [bold]lokiwiki init <vault-path>[/bold] first.")
+    raise typer.Exit(1)
 
 app = typer.Typer(
     help="Local LLM Wiki with Obsidian support – inspired by Karpathy's LLM Wiki",
@@ -19,7 +47,9 @@ def init(
     vault_path = Path(vault_name).resolve()
 
     if vault_path.exists():
-        console.print(f"[yellow]⚠️ Vault '{vault_name}' already exists.[/yellow]")
+        console.print(f"[yellow]⚠️  Vault already exists:[/yellow] {vault_path}")
+        save_config(str(vault_path))
+        console.print(f"[green]✅ Set as default vault.[/green]")
         return
 
     (vault_path / "raw").mkdir(parents=True, exist_ok=True)
@@ -133,6 +163,7 @@ Check for:
 """
     (vault_path / "config" / "agents.md").write_text(agents_content, encoding="utf-8")
 
+    save_config(str(vault_path))
     console.print(f"[green]✅ Vault created:[/green] {vault_path}")
     console.print("→ Open this folder in Obsidian")
     console.print("→ Then run: lokiwiki ingest <path-to-file>")
@@ -140,7 +171,7 @@ Check for:
 @app.command()
 def ingest(
     source_path: str = typer.Argument(..., help="Path to the file to ingest (PDF, TXT, MD)"),
-    vault:       str = typer.Option("my-wiki", "--vault", "-v", help="Path to your vault folder"),
+    vault:       str = typer.Option(None, "--vault", "-v", help="Path to your vault folder"),
     model:       str = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model to use"),
 ):
     """Ingest a document into the wiki. The LLM reads it and updates wiki pages."""
@@ -150,7 +181,7 @@ def ingest(
     )
     from lokiwiki.core.llm import LLM
 
-    vault_path = Path(vault).resolve()
+    vault_path = get_vault(vault)
     if not vault_path.exists():
         console.print(f"[red]Vault not found:[/red] {vault_path}")
         console.print("Run `lokiwiki init` first.")
@@ -231,6 +262,21 @@ related: {related_str}
             console.print(f"   • {c}")
 
     console.print(f"\n[green]✅ Ingest complete.[/green] Open your vault in Obsidian to explore.")
+
+@app.command()
+def config(
+    set_vault: str = typer.Option(None, "--set-vault", help="Set a new default vault path"),
+):
+    """View or update lokiwiki configuration."""
+    if set_vault:
+        save_config(set_vault)
+        console.print(f"[green]✅ Default vault set to:[/green] {set_vault}")
+        return
+    cfg = load_config()
+    if cfg:
+        console.print(f"Default vault: [bold]{cfg.get('default_vault', 'not set')}[/bold]")
+    else:
+        console.print("[yellow]No config found. Run `lokiwiki init <path>` to set a default vault.[/yellow]")
 
 if __name__ == "__main__":
     app()
