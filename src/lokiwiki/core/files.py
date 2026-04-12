@@ -1,5 +1,6 @@
 from pathlib import Path
 import shutil
+import re
 
 
 def read_source(source_path: str) -> tuple[str, str]:
@@ -85,3 +86,92 @@ def load_wiki_pages(vault_path: Path, filenames: list[str]) -> str:
                 combined.append(f"### {filename}\n\n{content}")
                 break
     return "\n\n---\n\n".join(combined)
+
+def get_all_wiki_pages(vault_path: Path) -> list[Path]:
+    """Return all .md files under wiki/"""
+    wiki_dir = vault_path / "wiki"
+    if not wiki_dir.exists():
+        return []
+    return list(wiki_dir.rglob("*.md"))
+
+
+def lint_wiki(vault_path: Path) -> dict:
+    """
+    Check the wiki for common issues.
+    Returns a report dict with lists of problems found.
+    """
+    wiki_dir = vault_path / "wiki"
+    all_pages = get_all_wiki_pages(vault_path)
+
+    # Build a set of all existing filenames (relative to wiki/)
+    existing = {p.relative_to(wiki_dir).as_posix() for p in all_pages}
+    existing_stems = {p.stem.lower() for p in all_pages}
+
+    report = {
+        "broken_wikilinks": [],   # (source_file, broken_link)
+        "orphan_pages": [],       # pages with no inbound links
+        "missing_from_index": [], # on disk but not in index.md
+        "stale_index_entries": [], # in index.md but not on disk
+        "frontmatter_issues": [], # missing required fields
+    }
+
+    # --- Check index.md ---
+    index_file = vault_path / "index.md"
+    index_entries = set()
+    if index_file.exists():
+        index_text = index_file.read_text(encoding="utf-8")
+        index_entries = set(re.findall(r'\(([^)]+\.md)\)', index_text))
+
+    for entry in index_entries:
+        if entry not in existing:
+            report["stale_index_entries"].append(entry)
+
+    for page_rel in existing:
+        if page_rel not in index_entries:
+            report["missing_from_index"].append(page_rel)
+
+    # --- Check each page ---
+    inbound_links = {rel: 0 for rel in existing}  # count inbound links per page
+
+    for page_path in all_pages:
+        content = page_path.read_text(encoding="utf-8", errors="ignore")
+        rel = page_path.relative_to(wiki_dir).as_posix()
+
+        # Check frontmatter
+        if not content.startswith("---"):
+            report["frontmatter_issues"].append(
+                f"{rel}: missing YAML frontmatter"
+            )
+        else:
+            for field in ["title", "tags", "sources"]:
+                if f"{field}:" not in content[:500]:
+                    report["frontmatter_issues"].append(
+                        f"{rel}: missing field '{field}'"
+                    )
+
+        # Check wikilinks [[Link Name]]
+        wikilinks = re.findall(r'\[\[([^\]]+)\]\]', content)
+        for link in wikilinks:
+            # Strip display text if [[Title|Display]]
+            link_target = link.split("|")[0].strip()
+            link_slug = link_target.lower().replace(" ", "_")
+
+            # Check if any existing page matches
+            matched = any(
+                stem == link_slug or stem == link_target.lower()
+                for stem in existing_stems
+            )
+            if not matched:
+                report["broken_wikilinks"].append((rel, link_target))
+            else:
+                # Count inbound link for the target
+                for existing_rel in existing:
+                    if Path(existing_rel).stem.lower() in (link_slug, link_target.lower()):
+                        inbound_links[existing_rel] = inbound_links.get(existing_rel, 0) + 1
+
+    # --- Orphan pages (no inbound links) ---
+    for rel, count in inbound_links.items():
+        if count == 0:
+            report["orphan_pages"].append(rel)
+
+    return report

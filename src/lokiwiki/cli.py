@@ -352,7 +352,89 @@ related: []
 """
         write_wiki_page(vault_path, filename, content)
         append_log(vault_path, f"## [{today}] query | {question}\n\nSaved as {filename}.")
-        console.print(f"[green]✅ Saved to wiki/{filename}[/green]")        
+        console.print(f"[green]✅ Saved to wiki/{filename}[/green]")
+
+@app.command()
+def lint(
+    vault: str = typer.Option(None, "--vault", "-v", help="Vault path (uses default if not set)"),
+    model: str = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model to use"),
+    suggest: bool = typer.Option(False, "--suggest", "-s", help="Ask LLM for improvement suggestions"),
+):
+    """Health-check the wiki — find broken links, orphans, and missing pages."""
+    from lokiwiki.core.files import lint_wiki, load_index
+    from lokiwiki.core.llm import LLM
+
+    vault_path = get_vault(vault)
+
+    console.print(f"[blue]🔍 Linting wiki:[/blue] {vault_path}")
+
+    report = lint_wiki(vault_path)
+
+    # --- Print report ---
+    console.print("\n" + "─" * 60)
+
+    if report["broken_wikilinks"]:
+        console.print(f"\n[red]❌ Broken wikilinks ({len(report['broken_wikilinks'])}):[/red]")
+        for source, link in report["broken_wikilinks"]:
+            console.print(f"   {source} → [[{link}]]")
+    else:
+        console.print("\n[green]✅ No broken wikilinks[/green]")
+
+    if report["orphan_pages"]:
+        console.print(f"\n[yellow]⚠️  Orphan pages ({len(report['orphan_pages'])}):[/yellow]")
+        for p in report["orphan_pages"]:
+            console.print(f"   {p}")
+    else:
+        console.print("[green]✅ No orphan pages[/green]")
+
+    if report["missing_from_index"]:
+        console.print(f"\n[yellow]⚠️  Pages missing from index ({len(report['missing_from_index'])}):[/yellow]")
+        for p in report["missing_from_index"]:
+            console.print(f"   {p}")
+    else:
+        console.print("[green]✅ Index is complete[/green]")
+
+    if report["stale_index_entries"]:
+        console.print(f"\n[red]❌ Stale index entries ({len(report['stale_index_entries'])}):[/red]")
+        for p in report["stale_index_entries"]:
+            console.print(f"   {p}")
+    else:
+        console.print("[green]✅ No stale index entries[/green]")
+
+    if report["frontmatter_issues"]:
+        console.print(f"\n[yellow]⚠️  Frontmatter issues ({len(report['frontmatter_issues'])}):[/yellow]")
+        for issue in report["frontmatter_issues"]:
+            console.print(f"   {issue}")
+    else:
+        console.print("[green]✅ All frontmatter looks good[/green]")
+
+    console.print("\n" + "─" * 60)
+
+    # Auto-fix: rebuild index to include missing pages
+    if report["missing_from_index"]:
+        if typer.confirm("\nAuto-fix: add missing pages to index.md?", default=True):
+            import re
+            index_file = vault_path / "index.md"
+            current = index_file.read_text(encoding="utf-8")
+            additions = []
+            for rel in report["missing_from_index"]:
+                title = Path(rel).stem.replace("_", " ")
+                additions.append(f"- [{title}]({rel})")
+            new_content = current.rstrip() + "\n" + "\n".join(additions) + "\n"
+            index_file.write_text(new_content, encoding="utf-8")
+            console.print(f"[green]✅ Added {len(additions)} pages to index.md[/green]")
+
+    # Optional LLM suggestions
+    if suggest:
+        console.print("\n[blue]🤖 Getting LLM suggestions...[/blue]")
+        report_text = str(report)
+        index = load_index(vault_path)
+        llm = LLM(model=model)
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+            progress.add_task("LLM is reviewing the wiki...", total=None)
+            suggestions = llm.lint_suggestions(report_text, index)
+        console.print("\n[bold]LLM Suggestions:[/bold]")
+        console.print(suggestions)  
 
 if __name__ == "__main__":
     app()

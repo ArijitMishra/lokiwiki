@@ -89,6 +89,25 @@ Return a JSON array of filenames. Example:
 Return ONLY the JSON array. No explanation.
 """
 
+LINT_PROMPT_TEMPLATE = """You are a wiki health advisor. Review this wiki health report and suggest improvements.
+
+## Wiki Health Report
+{report_text}
+
+## Wiki Index
+{index}
+
+## Your Task
+Based on the issues above, suggest:
+1. Which broken wikilinks could be fixed by linking to existing pages
+2. Which orphan pages should be linked from other pages
+3. Which concepts mentioned across pages deserve their own dedicated page
+4. Any other improvements to make the wiki more connected and useful
+
+Be specific and actionable. Keep suggestions concise.
+Return your suggestions as plain markdown text, not JSON.
+"""
+
 def _clean_llm_output(raw: str) -> str:
     """
     Clean common LLM output issues before JSON parsing.
@@ -224,3 +243,16 @@ class LLM:
             with open("llm_query_raw.txt", "w") as f:
                 f.write(response["message"]["content"])
             raise ValueError(f"LLM returned invalid JSON: {e}\nRaw output saved to llm_query_raw.txt")
+
+    def lint_suggestions(self, report_text: str, index: str) -> str:
+            """Get LLM suggestions based on lint report."""
+            prompt = LINT_PROMPT_TEMPLATE.format(
+                report_text=report_text,
+                index=index,
+            )
+            response = ollama.chat(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0, "num_predict": 1500},
+            )
+            return response["message"]["content"].strip()
