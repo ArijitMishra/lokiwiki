@@ -170,13 +170,14 @@ Check for:
 
 @app.command()
 def ingest(
-    source_path: str = typer.Argument(..., help="Path to the file to ingest (PDF, TXT, MD)"),
-    vault:       str = typer.Option(None, "--vault", "-v", help="Path to your vault folder"),
-    model:       str = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model to use"),
+    source_path: str = typer.Argument(..., help="Path to file to ingest (PDF, TXT, MD)"),
+    vault:  str  = typer.Option(None, "--vault",  "-v", help="Vault path (uses default if not set)"),
+    model:  str  = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model to use"),
+    start_page: int = typer.Option(1, "--start", "-s", help="Start from this page/chunk number (1-indexed)"),
 ):
-    """Ingest a document into the wiki. The LLM reads it and updates wiki pages."""
+    """Ingest a document page-by-page into the wiki."""
     from lokiwiki.core.files import (
-        read_source, copy_to_raw, load_index,
+        read_source_by_pages, copy_to_raw, load_index,
         write_wiki_page, update_index, append_log
     )
     from lokiwiki.core.llm import LLM
@@ -184,84 +185,99 @@ def ingest(
     vault_path = get_vault(vault)
     if not vault_path.exists():
         console.print(f"[red]Vault not found:[/red] {vault_path}")
-        console.print("Run `lokiwiki init` first.")
         raise typer.Exit(1)
 
-    # Step 1: Read the source file
+    # Step 1: Split source into pages/chunks
     console.print(f"[blue]📄 Reading source:[/blue] {source_path}")
     try:
-        source_text, filename = read_source(source_path)
+        pages, filename = read_source_by_pages(source_path)
     except (FileNotFoundError, ValueError, ImportError) as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
 
-    # Step 2: Copy into raw/
+    total = len(pages)
+    console.print(f"[dim]→ Found {total} pages/chunks to process[/dim]")
+
+    # Step 2: Copy to raw/
     copy_to_raw(source_path, vault_path)
     console.print(f"[dim]→ Copied to raw/{filename}[/dim]")
 
-    # Step 3: Load current wiki state
-    index = load_index(vault_path)
+    llm = LLM(model=model)
     today = date.today().isoformat()
 
-    # Step 4: Call the LLM
-    llm = LLM(model=model)
-    console.print(f"[blue]🤖 Sending to LLM ({model})...[/blue]")
-    console.print("[dim]   This may take 30–90 seconds on a laptop.[/dim]")
+    # Step 3: Process each page
+    pages_written = 0
+    start_idx = max(0, start_page - 1)  # convert to 0-indexed
 
-    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
-        progress.add_task("LLM is reading and synthesizing...", total=None)
-        try:
-            result = llm.ingest(source_text, filename, index, today)
-        except Exception as e:
-            console.print(f"[red]LLM error:[/red] {e}")
-            console.print("[dim]Is Ollama running? Try: ollama serve[/dim]")
-            raise typer.Exit(1)
+    for i, page_text in enumerate(pages[start_idx:], start=start_idx + 1):
 
-    # Step 5: Write wiki pages
-    pages = result.get("pages", [])
-    console.print(f"[green]✅ LLM returned {len(pages)} page(s) to write.[/green]")
+        console.print(f"\n[blue]🤖 Processing page {i}/{total}...[/blue]")
 
-    for page in pages:
-        filename_out = page.get("filename", "untitled.md")
-        fm = page.get("frontmatter", {})
-        body = page.get("content", "")
+        # Always reload index so LLM sees pages created in previous chunks
+        index = load_index(vault_path)
 
-        # Build YAML frontmatter manually (keeps it readable)
-        tags_str = "[" + ", ".join(fm.get("tags", [])) + "]"
-        related_str = "[" + ", ".join(f'"{r}"' for r in fm.get("related", [])) + "]"
-        sources_str = "[" + ", ".join(f'"{s}"' for s in fm.get("sources", [])) + "]"
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True
+        ) as progress:
+            progress.add_task(f"LLM reading page {i}/{total}...", total=None)
+            try:
+                result = llm.ingest(
+                    source_text=page_text,
+                    filename=filename,
+                    index=index,
+                    date=today,
+                    chunk_num=i,
+                    total_chunks=total,
+                )
+            except Exception as e:
+                console.print(f"[red]LLM error on page {i}:[/red] {e}")
+                console.print("[dim]Skipping this page and continuing...[/dim]")
+                continue
 
-        full_content = f"""---
+        # Step 4: Write pages
+        pages_result = result.get("pages", [])
+        for page in pages_result:
+            filename_out = page.get("filename", "untitled.md")
+            fm = page.get("frontmatter", {})
+            body = page.get("content", "")
+            action = page.get("action", "create")
+
+            tags_str    = "[" + ", ".join(fm.get("tags", [])) + "]"
+            related_str = "[" + ", ".join(f'"{r}"' for r in fm.get("related", [])) + "]"
+            sources_str = "[" + ", ".join(f'"{s}"' for s in fm.get("sources", [])) + "]"
+
+            full_content = f"""---
 title: "{fm.get('title', filename_out)}"
 tags: {tags_str}
 created: "{fm.get('created', today)}"
-updated: "{fm.get('updated', today)}"
+updated: "{today}"
 sources: {sources_str}
 related: {related_str}
 ---
 
 {body}
 """
-        write_wiki_page(vault_path, filename_out, full_content)
-        console.print(f"   [dim]Wrote:[/dim] wiki/{filename_out}")
+            write_wiki_page(vault_path, filename_out, full_content)
+            pages_written += 1
+            console.print(f"   [dim][{action}][/dim] wiki/{filename_out}")
 
-    # Step 6: Update index and log
-    if result.get("index_update"):
-        update_index(vault_path, result["index_update"])
-        console.print("[dim]→ index.md updated[/dim]")
+        # Step 5: Update index and log after each chunk
+        if result.get("index_update"):
+            update_index(vault_path, result["index_update"])
 
-    if result.get("log_entry"):
-        append_log(vault_path, result["log_entry"])
-        console.print("[dim]→ log.md updated[/dim]")
+        if result.get("log_entry"):
+            append_log(vault_path, result["log_entry"])
 
-    # Report any contradictions the LLM flagged
-    contradictions = result.get("contradictions", [])
-    if contradictions:
-        console.print("\n[yellow]⚠️  Contradictions flagged by LLM:[/yellow]")
-        for c in contradictions:
-            console.print(f"   • {c}")
+        contradictions = result.get("contradictions", [])
+        if contradictions:
+            console.print(f"   [yellow]⚠️  Contradictions:[/yellow]")
+            for c in contradictions:
+                console.print(f"      • {c}")
 
-    console.print(f"\n[green]✅ Ingest complete.[/green] Open your vault in Obsidian to explore.")
+    console.print(f"\n[green]✅ Ingest complete.[/green] {pages_written} page(s) written across {total - start_idx} chunks.")
+    console.print("[dim]Open your vault in Obsidian to explore the updated wiki.[/dim]")
 
 @app.command()
 def config(

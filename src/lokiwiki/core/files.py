@@ -175,3 +175,49 @@ def lint_wiki(vault_path: Path) -> dict:
             report["orphan_pages"].append(rel)
 
     return report
+
+def read_source_by_pages(source_path: str) -> tuple[list[str], str]:
+    """
+    Read a source file and return (list_of_page_texts, filename).
+    For PDFs: one entry per page.
+    For TXT/MD: split by double newline into ~page-sized chunks.
+    """
+    path = Path(source_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Source not found: {source_path}")
+
+    suffix = path.suffix.lower()
+
+    if suffix == ".pdf":
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            raise ImportError("pypdf is required. Run: pip install pypdf")
+        reader = PdfReader(str(path))
+        pages = []
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            text = text.strip()
+            if text:  # skip blank pages
+                pages.append(text)
+        return pages, path.name
+
+    elif suffix in (".txt", ".md"):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        # Split on double newlines, group into ~3000 char chunks
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        chunks = []
+        current = ""
+        for para in paragraphs:
+            if len(current) + len(para) > 3000:
+                if current:
+                    chunks.append(current)
+                current = para
+            else:
+                current += "\n\n" + para
+        if current:
+            chunks.append(current)
+        return chunks, path.name
+
+    else:
+        raise ValueError(f"Unsupported file type: {suffix}. Supported: .txt, .md, .pdf")

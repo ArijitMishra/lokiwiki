@@ -4,23 +4,35 @@ import ollama
 from rich.console import Console
 console = Console()
 
-INGEST_PROMPT_TEMPLATE = """You are a disciplined wiki maintainer. Your job is to read a source document and integrate its knowledge into an existing wiki.
+INGEST_PROMPT_TEMPLATE = """You are a disciplined wiki maintainer processing one chunk of a larger document.
 
 ## Current Wiki Index
 {index}
 
 ## Source Document
 Filename: {filename}
+Chunk: {chunk_num} of {total_chunks}
+
 Content:
 {source_text}
 
 ## Your Task
-Analyze this source and return a JSON object with the following structure:
+Read this chunk and integrate its knowledge into the wiki.
 
+IMPORTANT RULES:
+- If a relevant page already exists in the index, UPDATE it — do not create a duplicate.
+- Only CREATE a new page if no existing page covers this concept.
+- Keep pages focused — one concept or entity per page.
+- Use [[Wikilinks]] for all internal references.
+- Every page MUST have YAML frontmatter.
+- It is OK to return an empty "pages" list if this chunk adds nothing new.
+
+Return a JSON object:
 {{
   "pages": [
     {{
       "filename": "Concepts/Topic_Name.md",
+      "action": "create",
       "frontmatter": {{
         "title": "Topic Name",
         "tags": ["tag1", "tag2"],
@@ -29,20 +41,16 @@ Analyze this source and return a JSON object with the following structure:
         "sources": ["raw/{filename}"],
         "related": ["[[Related Topic]]"]
       }},
-      "content": "Full markdown body here using [[Wikilinks]] for internal references."
+      "content": "Full markdown body using [[Wikilinks]]..."
     }}
   ],
-  "index_update": "Full updated index.md content",
-  "log_entry": "## [{date}] ingest | {filename}\\n\\nBrief summary.",
+  "index_update": "Full updated index.md content (preserve existing entries, add new ones)",
+  "log_entry": "## [{date}] ingest chunk {chunk_num}/{total_chunks} | {filename}\\n\\nBrief summary.",
   "contradictions": []
 }}
 
-## Strict Rules
-- Return ONLY the JSON object. No explanation, no markdown fences, no preamble.
-- Do NOT include newlines inside JSON string values. Use \\n for line breaks within strings.
-- All string values must be valid JSON — escape any special characters.
-- Keep page content concise — aim for 200-400 words per page.
-- Create 3-6 pages maximum per ingest.
+For the "action" field use "create" for new pages or "update" for existing ones.
+Return ONLY the JSON. No preamble, no fences.
 """
 
 QUERY_PROMPT_TEMPLATE = """You are a knowledgeable wiki assistant. Answer the user's question using only the wiki pages provided.
@@ -165,9 +173,10 @@ class LLM:
     def __init__(self, model: str = "qwen2.5:7b"):
         self.model = model
 
-    def ingest(self, source_text: str, filename: str, index: str, date: str) -> dict:
-        # Truncate source text to fit context window
-        max_chars = 10000  # slightly smaller to leave room for prompt + output
+    def ingest(self, source_text: str, filename: str, index: str, date: str,
+               chunk_num: int = 1, total_chunks: int = 1) -> dict:
+        """Send one chunk to the LLM and get back structured wiki updates."""
+        max_chars = 3000
         if len(source_text) > max_chars:
             source_text = source_text[:max_chars] + "\n\n[...truncated...]"
 
@@ -176,29 +185,26 @@ class LLM:
             source_text=source_text,
             filename=filename,
             date=date,
+            chunk_num=chunk_num,
+            total_chunks=total_chunks,
         )
 
         response = ollama.chat(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            options={
-                "temperature": 0,
-                "num_predict": 3000,  # limit output length
-            },
+            options={"temperature": 0, "num_predict": 3000},
         )
 
         raw = response["message"]["content"]
-
         try:
             cleaned = _clean_llm_output(raw)
             return json.loads(cleaned)
         except json.JSONDecodeError as e:
-            # Save the raw output for debugging
             with open("llm_raw_output.txt", "w") as f:
                 f.write(raw)
             raise ValueError(
                 f"LLM returned invalid JSON: {e}\n"
-                f"Raw output saved to llm_raw_output.txt for inspection."
+                f"Raw output saved to llm_raw_output.txt"
             )
 
     def find_relevant_pages(self, index: str, question: str) -> list[str]:
