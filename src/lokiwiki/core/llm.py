@@ -1,7 +1,8 @@
 import json
 import re
 import ollama
-
+from rich.console import Console
+console = Console()
 
 INGEST_PROMPT_TEMPLATE = """You are a disciplined wiki maintainer. Your job is to read a source document and integrate its knowledge into an existing wiki.
 
@@ -198,9 +199,11 @@ class LLM:
                 if result:  # only return if non-empty
                     return result
 
-            # Fallback: extract all filenames directly from the index
+            #return []
+            #Fallback: extract all filenames directly from the index
             import re
             filenames = re.findall(r'\(([^)]+\.md)\)', index)
+            console.print("No relevent pages found, return 5 files")
             return filenames[:5]  # cap at 5
 
     def query(self, question: str, pages_content: str) -> dict:
