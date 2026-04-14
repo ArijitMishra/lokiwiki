@@ -116,6 +116,76 @@ Be specific and actionable. Keep suggestions concise.
 Return your suggestions as plain markdown text, not JSON.
 """
 
+CREATE_MISSING_PAGE_PROMPT = """You are a strict, high-quality wiki maintainer for an Obsidian vault.
+
+A page is referenced via [[wikilink]] but does not exist yet.
+
+## Referenced page title
+{page_title}
+
+## Pages that reference it
+{referencing_pages}
+
+## Content of referencing pages (combined)
+{referencing_content}
+
+## Current Wiki Index
+{index}
+
+Create a high-quality, concise wiki page for "{page_title}".
+
+Requirements:
+- Use proper Obsidian Markdown with [[wikilinks]] where appropriate.
+- Keep content factual and derived only from the provided referencing context.
+- Do not hallucinate sources or unrelated information.
+- Use clear headings if needed.
+
+Return ONLY this JSON (no explanation, no markdown fences):
+
+{{
+  "filename": "Concepts/{safe_title}.md",   // or appropriate subfolder: Concepts/, People/, Sources/, etc.
+  "frontmatter": {{
+    "title": "{page_title}",
+    "tags": ["concept", "tag2"],
+    "created": "{date}",
+    "updated": "{date}",
+    "sources": [],
+    "related": ["[[Related Page 1]]", "[[Related Page 2]]"]
+  }},
+  "content": "Full markdown body here..."
+}}
+"""
+
+FIX_ORPHAN_PROMPT = """You are a strict wiki maintainer.
+
+The following page exists but has no incoming wikilinks (it is an orphan).
+
+## Orphan page title
+{orphan_title}
+
+## Orphan page content
+{orphan_content}
+
+## Current Wiki Index
+{index}
+
+## Sample of other wiki pages for context
+{related_content}
+
+Your task: Find up to 3 existing pages where adding a natural [[{orphan_title}]] link makes sense. Return updated versions of ONLY those pages.
+
+Return ONLY a JSON array (no extra text):
+
+[
+  {{
+    "filename": "Concepts/Some_Page.md",
+    "content": "The FULL updated markdown content of the page with the new wikilink added naturally in the appropriate paragraph."
+  }}
+]
+
+Only include a page if the link genuinely improves the content. Do not force links.
+"""
+
 def _clean_llm_output(raw: str) -> str:
     """
     Clean common LLM output issues before JSON parsing.
@@ -262,3 +332,56 @@ class LLM:
                 options={"temperature": 0, "num_predict": 1500},
             )
             return response["message"]["content"].strip()
+    
+    def create_missing_page(self, page_title: str, referencing_pages: list[str],
+                            referencing_content: str, index: str, date: str) -> dict:
+        """Create a new wiki page for a broken wikilink target."""
+        safe_title = page_title.replace(" ", "_").replace("/", "_")
+        prompt = CREATE_MISSING_PAGE_PROMPT.format(
+            page_title=page_title,
+            safe_title=safe_title,
+            referencing_pages=", ".join(referencing_pages),
+            referencing_content=referencing_content[:4000],   # increased limit
+            index=index,
+            date=date,
+        )
+        response = ollama.chat(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0, "num_predict": 2500},
+        )
+        raw = _clean_llm_output(response["message"]["content"])
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            # Fallback: try to extract JSON object
+            import re
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if match:
+                return json.loads(match.group(0))
+            raise
+
+    def fix_orphan_page(self, orphan_title: str, orphan_content: str,
+                        related_content: str, index: str) -> list[dict]:
+        """Suggest updates to other pages to link to this orphan."""
+        prompt = FIX_ORPHAN_PROMPT.format(
+            orphan_title=orphan_title,
+            orphan_content=orphan_content[:2500],
+            related_content=related_content[:5000],
+            index=index,
+        )
+        response = ollama.chat(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0, "num_predict": 3000},
+        )
+        raw = _clean_llm_output(response["message"]["content"])
+        try:
+            # Extract JSON array safely
+            start = raw.find("[")
+            end = raw.rfind("]") + 1
+            if start != -1 and end > start:
+                return json.loads(raw[start:end])
+            return []
+        except (json.JSONDecodeError, Exception):
+            return []

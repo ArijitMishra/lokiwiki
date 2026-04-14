@@ -4,6 +4,7 @@ from datetime import date
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 import json
+import subprocess
 
 console = Console()
 
@@ -163,10 +164,161 @@ Check for:
 """
     (vault_path / "config" / "agents.md").write_text(agents_content, encoding="utf-8")
 
+    try:
+        git_dir = vault_path / ".git"
+        if git_dir.exists():
+            console.print("[green]Git repository already exists.[/green]")
+        else:
+            subprocess.run(["git", "init"], cwd=vault_path, check=True, capture_output=True)
+            
+            # Create useful .gitignore
+            gitignore_path = vault_path / ".gitignore"
+            gitignore_path.write_text(
+                """# Lokiwiki Gitignore
+raw/                  # Raw source files (immutable, usually large)
+.obsidian/            # Obsidian workspace settings (optional)
+llm_raw_output.txt    # Temporary debug files
+*.tmp
+
+# Ignore large binaries if any
+*.pdf
+*.jpg
+*.png
+""",
+                encoding="utf-8"
+            )
+
+            # Stage and make initial commit
+            subprocess.run(["git", "add", "."], cwd=vault_path, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-m", "Initial lokiwiki vault setup"],
+                cwd=vault_path,
+                check=True,
+                capture_output=True
+            )
+            git_initialized = True
+            console.print("[green]✅ Git repository initialized with initial commit.[/green]")
+
+    except subprocess.CalledProcessError as e:
+        console.print(f"[yellow]Git init failed (git may not be installed): {e.stderr.decode() if e.stderr else e}[/yellow]")
+        console.print("[dim]You can run `lokiwiki init-git` manually later.[/dim]")
+    except FileNotFoundError:
+        console.print("[yellow]Git command not found. Please install Git to enable automatic versioning.[/yellow]")
+
     save_config(str(vault_path))
     console.print(f"[green]✅ Vault created:[/green] {vault_path}")
     console.print("→ Open this folder in Obsidian")
     console.print("→ Then run: lokiwiki ingest <path-to-file>")
+
+@app.command()
+def init_git(
+    vault: str = typer.Option(None, "--vault", "-v")
+):
+    """Initialize Git repository in the vault for versioning."""
+    vault_path = get_vault(vault)
+    git_dir = vault_path / ".git"
+    
+    if git_dir.exists():
+        console.print("[green]✅ Git repository already initialized.[/green]")
+        return
+    
+    try:
+        import subprocess
+        subprocess.run(["git", "init"], cwd=vault_path, check=True, capture_output=True)
+        
+        # Create a sensible .gitignore
+        gitignore = vault_path / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text("""# Ignore raw sources (immutable)
+raw/
+# Ignore Obsidian config if you don't want to version it
+.obsidian/
+# Ignore temporary files
+*.tmp
+llm_raw_output.txt
+""", encoding="utf-8")
+        
+        # Initial commit
+        subprocess.run(["git", "add", "."], cwd=vault_path, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial lokiwiki vault commit"], 
+                      cwd=vault_path, check=True)
+        
+        console.print(f"[green]✅ Git repository initialized in {vault_path}[/green]")
+        console.print("   You can now use `lokiwiki backup` and `lokiwiki rollback`")
+        
+    except Exception as e:
+        console.print(f"[red]Failed to initialize Git: {e}[/red]")
+
+@app.command()
+def backup(
+    vault: str = typer.Option(None, "--vault", "-v"),
+    message: str = typer.Option("lokiwiki autofix / ingest", "--message", "-m")
+):
+    """Create a new version (Git commit) of the current wiki state."""
+    vault_path = get_vault(vault)
+    
+    if not (vault_path / ".git").exists():
+        console.print("[yellow]Git not initialized. Run `lokiwiki init-git` first.[/yellow]")
+        return
+    
+    try:
+        import subprocess
+        subprocess.run(["git", "add", "wiki/", "index.md", "log.md"], cwd=vault_path, check=True)
+        result = subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=vault_path, capture_output=True, text=True
+        )
+        
+        if result.returncode == 0:
+            console.print(f"[green]✅ Backup created: {message}[/green]")
+        else:
+            if "nothing to commit" in result.stdout.lower():
+                console.print("[yellow]No changes to backup.[/yellow]")
+            else:
+                console.print(f"[red]Commit failed: {result.stderr}[/red]")
+    except Exception as e:
+        console.print(f"[red]Backup failed: {e}[/red]")
+
+
+@app.command()
+def rollback(
+    vault: str = typer.Option(None, "--vault", "-v"),
+    steps: int = typer.Option(1, "--steps", "-s", help="How many commits to go back"),
+    list_only: bool = typer.Option(False, "--list", "-l", help="Just list history")
+):
+    """Revert to a previous version of the wiki."""
+    vault_path = get_vault(vault)
+    git_dir = vault_path / ".git"
+    
+    if not git_dir.exists():
+        console.print("[red]Git not initialized in this vault.[/red]")
+        return
+    
+    try:
+        import subprocess
+        
+        if list_only:
+            result = subprocess.run(["git", "log", "--oneline", "-10"], 
+                                  cwd=vault_path, capture_output=True, text=True)
+            console.print("[bold]Recent versions:[/bold]")
+            console.print(result.stdout)
+            return
+        
+        # Show history and let user choose
+        result = subprocess.run(["git", "log", "--oneline", "-20"], 
+                              cwd=vault_path, capture_output=True, text=True)
+        console.print(result.stdout)
+        
+        commit = typer.prompt("Enter commit hash (or 'HEAD~n') to rollback to")
+        
+        if typer.confirm(f"⚠️  This will reset wiki/ to {commit}. Continue?", default=False):
+            subprocess.run(["git", "reset", "--hard", commit], cwd=vault_path, check=True)
+            console.print(f"[green]✅ Rolled back to {commit}[/green]")
+            console.print("   Open your vault in Obsidian to see the previous state.")
+        
+    except Exception as e:
+        console.print(f"[red]Rollback failed: {e}[/red]")
+
 
 @app.command()
 def ingest(
@@ -372,64 +524,72 @@ related: []
 
 @app.command()
 def lint(
-    vault: str = typer.Option(None, "--vault", "-v", help="Vault path (uses default if not set)"),
-    model: str = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model to use"),
-    suggest: bool = typer.Option(False, "--suggest", "-s", help="Ask LLM for improvement suggestions"),
+    vault:    str  = typer.Option(None,  "--vault",   "-v", help="Vault path"),
+    model:    str  = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model"),
+    suggest:  bool = typer.Option(False, "--suggest",  "-s", help="Get LLM suggestions only"),
+    autofix:  bool = typer.Option(False, "--autofix",  "-a", help="Let LLM automatically fix broken links and orphans"),
 ):
-    """Health-check the wiki — find broken links, orphans, and missing pages."""
-    from lokiwiki.core.files import lint_wiki, load_index
+    """Health-check the wiki and optionally auto-fix issues with LLM."""
+    from lokiwiki.core.files import (
+        lint_wiki, 
+        load_index, 
+        load_page_content, 
+        write_wiki_page
+    )
     from lokiwiki.core.llm import LLM
+    from datetime import date
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    import re
+    from pathlib import Path
 
     vault_path = get_vault(vault)
-
     console.print(f"[blue]🔍 Linting wiki:[/blue] {vault_path}")
 
     report = lint_wiki(vault_path)
 
-    # --- Print report ---
-    console.print("\n" + "─" * 60)
+    # ====================== PRINT REPORT ======================
+    console.print("\n" + "─" * 70)
 
-    if report["broken_wikilinks"]:
+    if report.get("broken_wikilinks"):
         console.print(f"\n[red]❌ Broken wikilinks ({len(report['broken_wikilinks'])}):[/red]")
         for source, link in report["broken_wikilinks"]:
             console.print(f"   {source} → [[{link}]]")
     else:
         console.print("\n[green]✅ No broken wikilinks[/green]")
 
-    if report["orphan_pages"]:
+    if report.get("orphan_pages"):
         console.print(f"\n[yellow]⚠️  Orphan pages ({len(report['orphan_pages'])}):[/yellow]")
         for p in report["orphan_pages"]:
             console.print(f"   {p}")
     else:
         console.print("[green]✅ No orphan pages[/green]")
 
-    if report["missing_from_index"]:
-        console.print(f"\n[yellow]⚠️  Pages missing from index ({len(report['missing_from_index'])}):[/yellow]")
+    if report.get("missing_from_index"):
+        console.print(f"\n[yellow]⚠️  Missing from index ({len(report['missing_from_index'])}):[/yellow]")
         for p in report["missing_from_index"]:
             console.print(f"   {p}")
     else:
         console.print("[green]✅ Index is complete[/green]")
 
-    if report["stale_index_entries"]:
+    if report.get("stale_index_entries"):
         console.print(f"\n[red]❌ Stale index entries ({len(report['stale_index_entries'])}):[/red]")
         for p in report["stale_index_entries"]:
             console.print(f"   {p}")
     else:
         console.print("[green]✅ No stale index entries[/green]")
 
-    if report["frontmatter_issues"]:
+    if report.get("frontmatter_issues"):
         console.print(f"\n[yellow]⚠️  Frontmatter issues ({len(report['frontmatter_issues'])}):[/yellow]")
         for issue in report["frontmatter_issues"]:
             console.print(f"   {issue}")
     else:
         console.print("[green]✅ All frontmatter looks good[/green]")
 
-    console.print("\n" + "─" * 60)
+    console.print("\n" + "─" * 70)
 
-    # Auto-fix: rebuild index to include missing pages
-    if report["missing_from_index"]:
-        if typer.confirm("\nAuto-fix: add missing pages to index.md?", default=True):
-            import re
+    # ====================== PURE PYTHON FIXES ======================
+    if report.get("missing_from_index"):
+        if typer.confirm("\nAuto-fix: Add missing pages to index.md?", default=True):
             index_file = vault_path / "index.md"
             current = index_file.read_text(encoding="utf-8")
             additions = []
@@ -440,17 +600,105 @@ def lint(
             index_file.write_text(new_content, encoding="utf-8")
             console.print(f"[green]✅ Added {len(additions)} pages to index.md[/green]")
 
-    # Optional LLM suggestions
-    if suggest:
+    # ====================== LLM AUTOFIX ======================
+    if autofix:
+        if typer.confirm("Create a backup before autofix?", default=True):
+            backup(vault=vault, message="Pre-autofix backup")
+        console.print("\n[blue]🤖 Starting LLM-powered autofix...[/blue]")
+        llm = LLM(model=model)
+        index = load_index(vault_path)
+        today = date.today().isoformat()
+
+        # 1. Fix broken wikilinks by creating missing pages
+        if report.get("broken_wikilinks"):
+            # Group by target link title
+            broken_grouped: dict[str, list[str]] = {}
+            for source, link in report["broken_wikilinks"]:
+                broken_grouped.setdefault(link, []).append(source)
+
+            console.print(f"\n[blue]Creating {len(broken_grouped)} missing page(s)...[/blue]")
+
+            for link_title, sources in broken_grouped.items():
+                console.print(f"   → [[{link_title}]]")
+                ref_content = "\n\n---\n\n".join(
+                    load_page_content(vault_path, src) for src in sources
+                )
+
+                with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+                    progress.add_task(f"Creating [[{link_title}]]...", total=None)
+
+                    try:
+                        page_data = llm.create_missing_page(
+                            link_title, sources, ref_content, index, today
+                        )
+
+                        filename = page_data.get("filename", f"Concepts/{link_title.replace(' ', '_')}.md")
+                        fm = page_data.get("frontmatter", {})
+                        content = page_data.get("content", f"# {link_title}\n\nTODO: Add content from context.")
+
+                        full_content = f"""---
+title: "{fm.get('title', link_title)}"
+tags: {fm.get('tags', ['concept'])}
+created: "{today}"
+updated: "{today}"
+sources: []
+related: {fm.get('related', [])}
+---
+
+{content}
+"""
+                        write_wiki_page(vault_path, filename, full_content)
+                        console.print(f"   [green]✅ Created:[/green] wiki/{filename}")
+                    except Exception as e:
+                        console.print(f"   [red]Failed to create {link_title}:[/red] {e}")
+
+        # 2. Fix orphan pages by adding links from related pages
+        if report.get("orphan_pages"):
+            console.print(f"\n[blue]Fixing {len(report['orphan_pages'])} orphan page(s)...[/blue]")
+
+            for orphan_rel in report["orphan_pages"]:
+                orphan_title = Path(orphan_rel).stem.replace("_", " ")
+                console.print(f"   → {orphan_title}")
+
+                orphan_content = load_page_content(vault_path, orphan_rel)
+
+                # Load a small sample of other pages for context (limit to avoid token explosion)
+                all_pages = list((vault_path / "wiki").rglob("*.md"))
+                sample_pages = [p for p in all_pages 
+                               if p.relative_to(vault_path / "wiki").as_posix() != orphan_rel][:5]
+
+                related_content = "\n\n---\n\n".join(
+                    p.read_text(encoding="utf-8", errors="ignore") for p in sample_pages
+                )
+
+                with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+                    progress.add_task(f"Finding links for {orphan_title}...", total=None)
+
+                    try:
+                        updates = llm.fix_orphan_page(
+                            orphan_title, orphan_content, related_content, index
+                        )
+                        for update in updates[:3]:  # safety limit
+                            filename = update.get("filename")
+                            new_content = update.get("content")
+                            if filename and new_content:
+                                write_wiki_page(vault_path, filename, new_content)
+                                console.print(f"   [green]✅ Updated:[/green] wiki/{filename}")
+                    except Exception as e:
+                        console.print(f"   [red]Failed for {orphan_title}:[/red] {e}")
+
+        console.print(f"\n[green]✅ LLM Autofix completed.[/green]")
+
+    # ====================== LLM SUGGESTIONS (non-destructive) ======================
+    elif suggest:
         console.print("\n[blue]🤖 Getting LLM suggestions...[/blue]")
-        report_text = str(report)
         index = load_index(vault_path)
         llm = LLM(model=model)
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
             progress.add_task("LLM is reviewing the wiki...", total=None)
-            suggestions = llm.lint_suggestions(report_text, index)
+            suggestions = llm.lint_suggestions(str(report), index)
         console.print("\n[bold]LLM Suggestions:[/bold]")
-        console.print(suggestions)  
+        console.print(suggestions)
 
 if __name__ == "__main__":
     app()

@@ -221,3 +221,22 @@ def read_source_by_pages(source_path: str) -> tuple[list[str], str]:
 
     else:
         raise ValueError(f"Unsupported file type: {suffix}. Supported: .txt, .md, .pdf")
+
+def load_page_content(vault_path: Path, relative_path: str) -> str:
+    """Load a single wiki page content."""
+    page_path = vault_path / "wiki" / relative_path
+    if page_path.exists():
+        return page_path.read_text(encoding="utf-8", errors="ignore")
+    
+    # Fallback: search by filename
+    for found in (vault_path / "wiki").rglob("*.md"):
+        if found.name == Path(relative_path).name:
+            return found.read_text(encoding="utf-8", errors="ignore")
+    return ""
+
+def write_wiki_page(vault_path: Path, relative_path: str, content: str) -> None:
+    """Write or overwrite a wiki page."""
+    full_path = vault_path / "wiki" / relative_path
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    full_path.write_text(content, encoding="utf-8")
+
