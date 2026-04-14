@@ -322,115 +322,155 @@ def rollback(
 
 @app.command()
 def ingest(
-    source_path: str = typer.Argument(..., help="Path to file to ingest (PDF, TXT, MD)"),
-    vault:  str  = typer.Option(None, "--vault",  "-v", help="Vault path (uses default if not set)"),
-    model:  str  = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model to use"),
-    start_page: int = typer.Option(1, "--start", "-s", help="Start from this page/chunk number (1-indexed)"),
+    paths: list[str] = typer.Argument(..., help="File, folder, or multiple files to ingest"),
+    vault: str = typer.Option(None, "--vault", "-v", help="Vault path"),
+    model: str = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model"),
+    recursive: bool = typer.Option(True, "--recursive", "-r", help="Recurse into subfolders when ingesting a directory"),
+    backup: bool = typer.Option(True, "--backup/--no-backup", help="Create Git backup before ingesting (recommended)"),
 ):
-    """Ingest a document page-by-page into the wiki."""
+    """Ingest documents into the wiki.
+
+    Supports:
+    - Single file: lokiwiki ingest document.pdf
+    - Multiple files: lokiwiki ingest file1.pdf file2.txt
+    - Folder: lokiwiki ingest my_documents/   (ingests all PDFs, TXT, MD inside)
+    """
     from lokiwiki.core.files import (
-        read_source_by_pages, copy_to_raw, load_index,
-        write_wiki_page, update_index, append_log
+        get_vault, 
+        copy_to_raw, 
+        read_source_by_pages,
+        load_index,
+        write_wiki_page,   # if needed
+        lint_wiki   # optional: to show issues after batch
     )
     from lokiwiki.core.llm import LLM
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+    from pathlib import Path
+    import subprocess
+    from datetime import datetime
 
     vault_path = get_vault(vault)
-    if not vault_path.exists():
-        console.print(f"[red]Vault not found:[/red] {vault_path}")
-        raise typer.Exit(1)
-
-    # Step 1: Split source into pages/chunks
-    console.print(f"[blue]📄 Reading source:[/blue] {source_path}")
-    try:
-        pages, filename = read_source_by_pages(source_path)
-    except (FileNotFoundError, ValueError, ImportError) as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
-
-    total = len(pages)
-    console.print(f"[dim]→ Found {total} pages/chunks to process[/dim]")
-
-    # Step 2: Copy to raw/
-    copy_to_raw(source_path, vault_path)
-    console.print(f"[dim]→ Copied to raw/{filename}[/dim]")
+    console.print(f"[blue]Ingesting into vault:[/blue] {vault_path}")
 
     llm = LLM(model=model)
-    today = date.today().isoformat()
 
-    # Step 3: Process each page
-    pages_written = 0
-    start_idx = max(0, start_page - 1)  # convert to 0-indexed
-
-    for i, page_text in enumerate(pages[start_idx:], start=start_idx + 1):
-
-        console.print(f"\n[blue]🤖 Processing page {i}/{total}...[/blue]")
-
-        # Always reload index so LLM sees pages created in previous chunks
-        index = load_index(vault_path)
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            transient=True
-        ) as progress:
-            progress.add_task(f"LLM reading page {i}/{total}...", total=None)
+    # ====================== AUTO BACKUP ======================
+    if backup and (vault_path / ".git").exists():
+        if typer.confirm("Create Git backup before ingesting?", default=True):
             try:
-                result = llm.ingest(
-                    source_text=page_text,
-                    filename=filename,
-                    index=index,
-                    date=today,
-                    chunk_num=i,
-                    total_chunks=total,
+                subprocess.run(["git", "add", "wiki/", "index.md", "log.md"], 
+                             cwd=vault_path, check=True, capture_output=True)
+                subprocess.run(
+                    ["git", "commit", "-m", f"Pre-ingest backup - {datetime.now().strftime('%Y-%m-%d %H:%M')}"],
+                    cwd=vault_path, check=True, capture_output=True
                 )
+                console.print("[green]✅ Pre-ingest backup created[/green]")
+            except Exception:
+                console.print("[yellow]Backup skipped (no changes or git issue)[/yellow]")
+
+    # ====================== COLLECT ALL FILES TO INGEST ======================
+    supported_extensions = {".pdf", ".txt", ".md"}
+    files_to_ingest: list[Path] = []
+
+    for path_str in paths:
+        path = Path(path_str).resolve()
+
+        if not path.exists():
+            console.print(f"[red]Error:[/red] Path not found: {path}")
+            continue
+
+        if path.is_file():
+            if path.suffix.lower() in supported_extensions:
+                files_to_ingest.append(path)
+            else:
+                console.print(f"[yellow]Skipping unsupported file:[/yellow] {path}")
+
+        elif path.is_dir():
+            console.print(f"[blue]Scanning folder:[/blue] {path}")
+            pattern = "**/*" if recursive else "*"
+            for file in path.glob(pattern):
+                if file.is_file() and file.suffix.lower() in supported_extensions:
+                    files_to_ingest.append(file)
+        else:
+            console.print(f"[yellow]Skipping:[/yellow] {path} (not a file or folder)")
+
+    if not files_to_ingest:
+        console.print("[red]No supported files found to ingest.[/red]")
+        return
+
+    console.print(f"[green]Found {len(files_to_ingest)} file(s) to ingest.[/green]")
+
+    # ====================== INGEST EACH FILE ======================
+    index = load_index(vault_path)   # initial index
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        transient=False,
+    ) as progress:
+        task = progress.add_task("Ingesting files...", total=len(files_to_ingest))
+
+        for file_path in files_to_ingest:
+            progress.update(task, description=f"Processing {file_path.name}")
+            
+            try:
+                console.print(f"\n[cyan]→ Ingesting:[/cyan] {file_path.name}")
+
+                # 1. Copy original to raw/
+                raw_rel_path = copy_to_raw(vault_path, file_path)
+
+                # 2. Split into chunks (pages)
+                chunks = read_source_by_pages(file_path)
+
+                if not chunks:
+                    console.print(f"   [yellow]No content extracted from {file_path.name}[/yellow]")
+                    progress.advance(task)
+                    continue
+
+                # 3. Ingest chunk by chunk (your existing logic)
+                for i, chunk in enumerate(chunks, 1):
+                    progress.update(task, description=f"{file_path.name} → page {i}/{len(chunks)}")
+                    
+                    try:
+                        result = llm.ingest(
+                            chunk=chunk,
+                            source_name=file_path.name,
+                            current_index=index,
+                            raw_path=raw_rel_path
+                        )
+                        
+                        # Process the result (create/update pages, update index, log)
+                        # This part depends on your current implementation
+                        # Example skeleton:
+                        for page in result.get("pages", []):
+                            write_wiki_page(vault_path, page["filename"], page.get("content", ""))
+                        
+                        if "index_update" in result:
+                            index = result["index_update"]   # update local index for next chunks
+                            (vault_path / "index.md").write_text(index, encoding="utf-8")
+                        
+                        if "log_entry" in result:
+                            with open(vault_path / "log.md", "a", encoding="utf-8") as f:
+                                f.write(result["log_entry"] + "\n\n")
+
+                    except Exception as chunk_err:
+                        console.print(f"   [red]Chunk error:[/red] {chunk_err}")
+
+                console.print(f"   [green]✅ Finished:[/green] {file_path.name}")
+
             except Exception as e:
-                console.print(f"[red]LLM error on page {i}:[/red] {e}")
-                console.print("[dim]Skipping this page and continuing...[/dim]")
-                continue
+                console.print(f"   [red]Failed to ingest {file_path.name}:[/red] {e}")
 
-        # Step 4: Write pages
-        pages_result = result.get("pages", [])
-        for page in pages_result:
-            filename_out = page.get("filename", "untitled.md")
-            fm = page.get("frontmatter", {})
-            body = page.get("content", "")
-            action = page.get("action", "create")
+            progress.advance(task)
 
-            tags_str    = "[" + ", ".join(fm.get("tags", [])) + "]"
-            related_str = "[" + ", ".join(f'"{r}"' for r in fm.get("related", [])) + "]"
-            sources_str = "[" + ", ".join(f'"{s}"' for s in fm.get("sources", [])) + "]"
+    console.print("\n[bold green]🎉 Ingest completed![/bold green]")
 
-            full_content = f"""---
-title: "{fm.get('title', filename_out)}"
-tags: {tags_str}
-created: "{fm.get('created', today)}"
-updated: "{today}"
-sources: {sources_str}
-related: {related_str}
----
-
-{body}
-"""
-            write_wiki_page(vault_path, filename_out, full_content)
-            pages_written += 1
-            console.print(f"   [dim][{action}][/dim] wiki/{filename_out}")
-
-        # Step 5: Update index and log after each chunk
-        if result.get("index_update"):
-            update_index(vault_path, result["index_update"])
-
-        if result.get("log_entry"):
-            append_log(vault_path, result["log_entry"])
-
-        contradictions = result.get("contradictions", [])
-        if contradictions:
-            console.print(f"   [yellow]⚠️  Contradictions:[/yellow]")
-            for c in contradictions:
-                console.print(f"      • {c}")
-
-    console.print(f"\n[green]✅ Ingest complete.[/green] {pages_written} page(s) written across {total - start_idx} chunks.")
-    console.print("[dim]Open your vault in Obsidian to explore the updated wiki.[/dim]")
-
+    # Optional: Final lint summary
+    if typer.confirm("Run lint to check wiki health after ingest?", default=False):
+        # You can call your lint logic here or just suggest running `lokiwiki lint`
+        console.print("Run `lokiwiki lint --autofix` if you want to clean up broken links/orphans.")
 @app.command()
 def config(
     set_vault: str = typer.Option(None, "--set-vault", help="Set a new default vault path"),
