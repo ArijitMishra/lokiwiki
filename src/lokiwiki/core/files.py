@@ -50,16 +50,6 @@ def load_index(vault_path: Path) -> str:
     return "# Wiki Index\n\n(empty)"
 
 
-def write_wiki_page(vault_path: Path, filename: str, content: str):
-    """Write a page to vault/wiki/, creating subdirs as needed."""
-    wiki_dir = vault_path / "wiki"
-    wiki_dir.mkdir(exist_ok=True)
-    page_path = wiki_dir / filename
-    # Create subdirectory if filename includes one (e.g. "Concepts/Attention.md")
-    page_path.parent.mkdir(parents=True, exist_ok=True)
-    page_path.write_text(content, encoding="utf-8")
-
-
 def update_index(vault_path: Path, new_index: str):
     """Overwrite index.md with the updated content."""
     (vault_path / "index.md").write_text(new_index, encoding="utf-8")

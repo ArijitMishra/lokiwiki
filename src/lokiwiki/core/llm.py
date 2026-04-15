@@ -91,10 +91,10 @@ RELEVANCE_PROMPT_TEMPLATE = """You are a wiki search assistant. Given an index o
 - Always return at least 1 page unless the index is completely empty.
 - Maximum 5 pages.
 
-Return a JSON array of filenames. Example:
-["Concepts/Attention.md", "Sources/Paper.md"]
+Return a JSON object with a single key "pages". Example:
+{{"pages": ["Concepts/Attention.md", "Sources/Paper.md"]}}
 
-Return ONLY the JSON array. No explanation.
+Return ONLY the JSON object. No explanation.
 """
 
 LINT_PROMPT_TEMPLATE = """You are a wiki health advisor. Review this wiki health report and suggest improvements.
@@ -278,28 +278,21 @@ class LLM:
             )
 
     def find_relevant_pages(self, index: str, question: str) -> list[str]:
-            """Ask the LLM which pages in the index are relevant to the question."""
-            prompt = RELEVANCE_PROMPT_TEMPLATE.format(index=index, question=question)
-            response = ollama.chat(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0},
-            )
-            raw = response["message"]["content"]
+        """Ask the LLM which pages in the index are relevant to the question."""
+        prompt = RELEVANCE_PROMPT_TEMPLATE.format(index=index, question=question)
+        response = ollama.chat(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0, "num_predict": 500},
+        )
+        raw = response["message"]["content"]
+        try:
             cleaned = _clean_llm_output(raw)
-            start = cleaned.find("[")
-            end = cleaned.rfind("]")
-            if start != -1 and end != -1:
-                result = json.loads(cleaned[start:end+1])
-                if result:  # only return if non-empty
-                    return result
-
-            #return []
-            #Fallback: extract all filenames directly from the index
-            import re
+            return json.loads(cleaned).get("pages", [])
+        except json.JSONDecodeError:
+            console.print("[yellow]Could not parse relevance response, falling back to index scan.[/yellow]")
             filenames = re.findall(r'\(([^)]+\.md)\)', index)
-            console.print("No relevent pages found, return 5 files")
-            return filenames[:5]  # cap at 5
+            return filenames[:5]
 
     def query(self, question: str, pages_content: str) -> dict:
         """Answer a question using the provided wiki page content."""
