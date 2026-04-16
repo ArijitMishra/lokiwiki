@@ -430,11 +430,27 @@ related: {related_str}
                 console.print(f"   [dim][{action}][/dim] wiki/{filename_out}")
 
             # Step 5: Update index and log after each chunk
-            if result.get("index_update"):
-                update_index(vault_path, result["index_update"])
+                pages_result = result.get("pages", [])
+                if pages_result:
+                    index_file = vault_path / "index.md"
+                    current_index = index_file.read_text(encoding="utf-8")
+                    new_entries = []
+                    for page in pages_result:
+                        fm = page["frontmatter"]
+                        title = fm.get("title", "Untitled")
+                        fname = page.get("filename", "")
+                        tags = ", ".join(fm.get("tags", []))
+                        entry = f"- [{title}]({fname}) — {tags}"
+                        # Only add if not already in index
+                        if fname not in current_index:
+                            new_entries.append(entry)
+                    if new_entries:
+                        updated_index = current_index.rstrip() + "\n" + "\n".join(new_entries) + "\n"
+                        update_index(vault_path, updated_index)
 
-            if result.get("log_entry"):
-                append_log(vault_path, result["log_entry"])
+                if result.get("log_entry"):
+                    today = date.today().isoformat()
+                    append_log(vault_path, f"## [{today}] ingest chunk {i}/{total} | {filename}\n\n{result['log_entry']}")
 
             contradictions = result.get("contradictions", [])
             if contradictions:

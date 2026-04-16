@@ -4,7 +4,7 @@ import ollama
 from rich.console import Console
 console = Console()
 
-INGEST_PROMPT_TEMPLATE = """You are a disciplined wiki maintainer processing one chunk of a larger document.
+INGEST_PROMPT_TEMPLATE = """You are a wiki maintainer processing one chunk of a document.
 
 ## Current Wiki Index
 {index}
@@ -17,40 +17,40 @@ Content:
 {source_text}
 
 ## Your Task
-Read this chunk and integrate its knowledge into the wiki.
+Read this chunk and return wiki page updates.
 
-IMPORTANT RULES:
-- If a relevant page already exists in the index, UPDATE it — do not create a duplicate.
+RULES:
+- If a relevant page already exists in the index, UPDATE it — do not duplicate.
 - Only CREATE a new page if no existing page covers this concept.
-- Keep pages focused — one concept or entity per page.
 - Use [[Wikilinks]] for all internal references.
-- Every page MUST have YAML frontmatter.
-- It is OK to return an empty "pages" list if this chunk adds nothing new.
+- It is OK to return no pages if this chunk adds nothing new.
 
-Return a JSON object:
-{{
-  "pages": [
-    {{
-      "filename": "Concepts/Topic_Name.md",
-      "action": "create",
-      "frontmatter": {{
-        "title": "Topic Name",
-        "tags": ["tag1", "tag2"],
-        "created": "{date}",
-        "updated": "{date}",
-        "sources": ["raw/{filename}"],
-        "related": ["[[Related Topic]]"]
-      }},
-      "content": "Full markdown body using [[Wikilinks]]..."
-    }}
-  ],
-  "index_update": "Full updated index.md content (preserve existing entries, add new ones)",
-  "log_entry": "## [{date}] ingest chunk {chunk_num}/{total_chunks} | {filename}\\n\\nBrief summary.",
-  "contradictions": []
-}}
+Return ONLY this plain text format, with each page separated by the delimiter shown:
 
-For the "action" field use "create" for new pages or "update" for existing ones.
-Return ONLY the JSON. No preamble, no fences.
+PAGE_START
+filename: Concepts/Topic_Name.md
+action: create
+title: Topic Name
+tags: tag1, tag2
+related: [[Related Topic]], [[Other Topic]]
+
+Full markdown body here. Use [[Wikilinks]] freely.
+Math, symbols, anything goes here — no escaping needed.
+PAGE_END
+
+PAGE_START
+filename: Concepts/Another_Topic.md
+action: update
+title: Another Topic
+tags: tag1
+related: [[Topic Name]]
+
+Body of second page here.
+PAGE_END
+
+SUMMARY: One sentence summary of what was added or updated.
+
+If there is nothing to add, return only: NOTHING
 """
 
 QUERY_PROMPT_TEMPLATE = """You are a knowledgeable wiki assistant. Answer the user's question using only the wiki pages provided.
@@ -65,16 +65,21 @@ QUERY_PROMPT_TEMPLATE = """You are a knowledgeable wiki assistant. Answer the us
 - Answer clearly and concisely using information from the wiki pages above.
 - Cite your sources using [[Wikilink]] format when referencing specific pages.
 - If the answer requires information not present in the wiki, say so explicitly.
-- At the end, list which pages you used under a ## Sources section.
-- Return a JSON object with this structure:
 
-{{
-  "answer": "Your full markdown answer here, using [[Wikilinks]] for citations.",
-  "sources": ["Concepts/Page_One.md", "Concepts/Page_Two.md"],
-  "save_as": "Suggested_Filename.md"
-}}
+Return ONLY this plain text format:
 
-Return ONLY the JSON. No preamble, no markdown fences.
+ANSWER
+Your full markdown answer here, using [[Wikilinks]] for citations.
+END_ANSWER
+
+SOURCES
+Concepts/Page_One.md
+Concepts/Page_Two.md
+END_SOURCES
+
+SAVE_AS
+Suggested_Filename.md
+END_SAVE_AS
 """
 
 RELEVANCE_PROMPT_TEMPLATE = """You are a wiki search assistant. Given an index of wiki pages and a question, return the filenames of the most relevant pages.
@@ -138,22 +143,24 @@ Requirements:
 - Use proper Obsidian Markdown with [[wikilinks]] where appropriate.
 - Keep content factual and derived only from the provided referencing context.
 - Do not hallucinate sources or unrelated information.
-- Use clear headings if needed.
 
-Return ONLY this JSON (no explanation, no markdown fences):
+Return ONLY this plain text format:
 
-{{
-  "filename": "Concepts/{safe_title}.md",   // or appropriate subfolder: Concepts/, People/, Sources/, etc.
-  "frontmatter": {{
-    "title": "{page_title}",
-    "tags": ["concept", "tag2"],
-    "created": "{date}",
-    "updated": "{date}",
-    "sources": [],
-    "related": ["[[Related Page 1]]", "[[Related Page 2]]"]
-  }},
-  "content": "Full markdown body here..."
-}}
+FILENAME
+Concepts/{safe_title}.md
+END_FILENAME
+
+TAGS
+concept, tag2
+END_TAGS
+
+RELATED
+[[Related Page 1]], [[Related Page 2]]
+END_RELATED
+
+CONTENT
+Full markdown body here.
+END_CONTENT
 """
 
 FIX_ORPHAN_PROMPT = """You are a strict wiki maintainer.
@@ -172,71 +179,95 @@ The following page exists but has no incoming wikilinks (it is an orphan).
 ## Sample of other wiki pages for context
 {related_content}
 
-Your task: Find up to 3 existing pages where adding a natural [[{orphan_title}]] link makes sense. Return updated versions of ONLY those pages.
+Your task: Find up to 3 existing pages where adding a natural [[{orphan_title}]] link makes sense.
 
-Return ONLY a JSON array (no extra text):
+Return ONLY this plain text format for each page to update:
 
-[
-  {{
-    "filename": "Concepts/Some_Page.md",
-    "content": "The FULL updated markdown content of the page with the new wikilink added naturally in the appropriate paragraph."
-  }}
-]
+PAGE_START
+filename: Concepts/Some_Page.md
+
+The FULL updated markdown content of the page with the new wikilink added naturally.
+PAGE_END
 
 Only include a page if the link genuinely improves the content. Do not force links.
+If no pages are suitable, return: NOTHING
 """
 
-def _clean_llm_output(raw: str) -> str:
+def _parse_ingest_response(raw: str, filename: str, date: str) -> dict:
     """
-    Clean common LLM output issues before JSON parsing.
+    Parse the plain-text ingest response into the same dict structure
+    the rest of the code expects.
     """
-    # Strip markdown code fences if present
     raw = raw.strip()
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        # Remove first line (```json or ```) and last line (```)
-        raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
 
-    # Find the JSON object — start at first { and end at last }
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start != -1 and end != -1:
-        raw = raw[start:end+1]
+    if raw == "NOTHING" or raw.startswith("NOTHING"):
+        return {"pages": [], "index_update": None, "log_entry": None, "contradictions": []}
 
-    # Replace literal control characters inside strings
-    # This handles the "Invalid control character" error
-    def fix_control_chars(s):
-        # Replace actual newlines/tabs inside string values with escaped versions
-        result = []
-        in_string = False
-        escape_next = False
-        for char in s:
-            if escape_next:
-                result.append(char)
-                escape_next = False
-                continue
-            if char == '\\':
-                escape_next = True
-                result.append(char)
-                continue
-            if char == '"' and not escape_next:
-                in_string = not in_string
-                result.append(char)
-                continue
-            if in_string and char == '\n':
-                result.append('\\n')
-                continue
-            if in_string and char == '\r':
-                result.append('\\r')
-                continue
-            if in_string and char == '\t':
-                result.append('\\t')
-                continue
-            result.append(char)
-        return ''.join(result)
+    pages = []
+    # Extract each PAGE_START...PAGE_END block
+    blocks = re.findall(r'PAGE_START\s*(.*?)\s*PAGE_END', raw, re.DOTALL)
 
-    raw = fix_control_chars(raw)
-    return raw
+    for block in blocks:
+        lines = block.strip().splitlines()
+        meta = {}
+        body_lines = []
+        in_body = False
+
+        for line in lines:
+            if in_body:
+                body_lines.append(line)
+            elif line.startswith("filename:"):
+                meta["filename"] = line.split(":", 1)[1].strip()
+            elif line.startswith("action:"):
+                meta["action"] = line.split(":", 1)[1].strip()
+            elif line.startswith("title:"):
+                meta["title"] = line.split(":", 1)[1].strip()
+            elif line.startswith("tags:"):
+                meta["tags"] = [t.strip() for t in line.split(":", 1)[1].split(",")]
+            elif line.startswith("related:"):
+                meta["related"] = [r.strip() for r in line.split(":", 1)[1].split(",")]
+            elif line == "":
+                # First blank line = end of headers, start of body
+                in_body = True
+
+        if "filename" not in meta:
+            continue  # skip malformed blocks
+
+        pages.append({
+            "filename": meta.get("filename", "Concepts/Untitled.md"),
+            "action": meta.get("action", "create"),
+            "frontmatter": {
+                "title": meta.get("title", "Untitled"),
+                "tags": meta.get("tags", []),
+                "created": date,
+                "updated": date,
+                "sources": [f"raw/{filename}"],
+                "related": meta.get("related", []),
+            },
+            "content": "\n".join(body_lines).strip(),
+        })
+
+    # Extract summary for log entry
+    summary_match = re.search(r'SUMMARY:\s*(.+)', raw)
+    summary = summary_match.group(1).strip() if summary_match else "Processed chunk."
+
+    return {
+        "pages": pages,
+        "index_update": None,   # handled separately — see note below
+        "log_entry": summary,
+        "contradictions": [],
+    }
+
+def _parse_query_response(raw: str) -> dict:
+    answer_match = re.search(r'ANSWER\s*(.*?)\s*END_ANSWER', raw, re.DOTALL)
+    sources_match = re.search(r'SOURCES\s*(.*?)\s*END_SOURCES', raw, re.DOTALL)
+    save_as_match = re.search(r'SAVE_AS\s*(.*?)\s*END_SAVE_AS', raw, re.DOTALL)
+
+    answer = answer_match.group(1).strip() if answer_match else raw.strip()
+    sources = [s.strip() for s in sources_match.group(1).strip().splitlines() if s.strip()] if sources_match else []
+    save_as = save_as_match.group(1).strip() if save_as_match else "Queries/Answer.md"
+
+    return {"answer": answer, "sources": sources, "save_as": save_as}
 
 
 class LLM:
@@ -244,7 +275,7 @@ class LLM:
         self.model = model
 
     def ingest(self, source_text: str, filename: str, index: str, date: str,
-               chunk_num: int = 1, total_chunks: int = 1) -> dict:
+           chunk_num: int = 1, total_chunks: int = 1) -> dict:
         """Send one chunk to the LLM and get back structured wiki updates."""
         max_chars = 3000
         if len(source_text) > max_chars:
@@ -254,7 +285,6 @@ class LLM:
             index=index,
             source_text=source_text,
             filename=filename,
-            date=date,
             chunk_num=chunk_num,
             total_chunks=total_chunks,
         )
@@ -266,16 +296,7 @@ class LLM:
         )
 
         raw = response["message"]["content"]
-        try:
-            cleaned = _clean_llm_output(raw)
-            return json.loads(cleaned)
-        except json.JSONDecodeError as e:
-            with open("llm_raw_output.txt", "w") as f:
-                f.write(raw)
-            raise ValueError(
-                f"LLM returned invalid JSON: {e}\n"
-                f"Raw output saved to llm_raw_output.txt"
-            )
+        return _parse_ingest_response(raw, filename, date)
 
     def find_relevant_pages(self, index: str, question: str) -> list[str]:
         """Ask the LLM which pages in the index are relevant to the question."""
@@ -287,8 +308,9 @@ class LLM:
         )
         raw = response["message"]["content"]
         try:
-            cleaned = _clean_llm_output(raw)
-            return json.loads(cleaned).get("pages", [])
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            return json.loads(raw[start:end]).get("pages", [])
         except json.JSONDecodeError:
             console.print("[yellow]Could not parse relevance response, falling back to index scan.[/yellow]")
             filenames = re.findall(r'\(([^)]+\.md)\)', index)
@@ -305,13 +327,7 @@ class LLM:
             messages=[{"role": "user", "content": prompt}],
             options={"temperature": 0, "num_predict": 2000},
         )
-        raw = _clean_llm_output(response["message"]["content"])
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError as e:
-            with open("llm_query_raw.txt", "w") as f:
-                f.write(response["message"]["content"])
-            raise ValueError(f"LLM returned invalid JSON: {e}\nRaw output saved to llm_query_raw.txt")
+        return _parse_query_response(response["message"]["content"])
 
     def lint_suggestions(self, report_text: str, index: str) -> str:
             """Get LLM suggestions based on lint report."""
@@ -327,35 +343,44 @@ class LLM:
             return response["message"]["content"].strip()
     
     def create_missing_page(self, page_title: str, referencing_pages: list[str],
-                            referencing_content: str, index: str, date: str) -> dict:
+                        referencing_content: str, index: str, date: str) -> dict:
         """Create a new wiki page for a broken wikilink target."""
         safe_title = page_title.replace(" ", "_").replace("/", "_")
         prompt = CREATE_MISSING_PAGE_PROMPT.format(
             page_title=page_title,
             safe_title=safe_title,
             referencing_pages=", ".join(referencing_pages),
-            referencing_content=referencing_content[:4000],   # increased limit
+            referencing_content=referencing_content[:4000],
             index=index,
             date=date,
         )
         response = ollama.chat(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.0, "num_predict": 2500},
+            options={"temperature": 0, "num_predict": 2500},
         )
-        raw = _clean_llm_output(response["message"]["content"])
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            # Fallback: try to extract JSON object
-            import re
-            match = re.search(r'\{.*\}', raw, re.DOTALL)
-            if match:
-                return json.loads(match.group(0))
-            raise
+        raw = response["message"]["content"]
+
+        filename_match = re.search(r'FILENAME\s*(.*?)\s*END_FILENAME', raw, re.DOTALL)
+        tags_match = re.search(r'TAGS\s*(.*?)\s*END_TAGS', raw, re.DOTALL)
+        related_match = re.search(r'RELATED\s*(.*?)\s*END_RELATED', raw, re.DOTALL)
+        content_match = re.search(r'CONTENT\s*(.*?)\s*END_CONTENT', raw, re.DOTALL)
+
+        return {
+            "filename": filename_match.group(1).strip() if filename_match else f"Concepts/{safe_title}.md",
+            "frontmatter": {
+                "title": page_title,
+                "tags": [t.strip() for t in tags_match.group(1).split(",")] if tags_match else ["concept"],
+                "created": date,
+                "updated": date,
+                "sources": [],
+                "related": [r.strip() for r in related_match.group(1).split(",")] if related_match else [],
+            },
+            "content": content_match.group(1).strip() if content_match else f"# {page_title}\n",
+        }
 
     def fix_orphan_page(self, orphan_title: str, orphan_content: str,
-                        related_content: str, index: str) -> list[dict]:
+                    related_content: str, index: str) -> list[dict]:
         """Suggest updates to other pages to link to this orphan."""
         prompt = FIX_ORPHAN_PROMPT.format(
             orphan_title=orphan_title,
@@ -366,15 +391,27 @@ class LLM:
         response = ollama.chat(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.0, "num_predict": 3000},
+            options={"temperature": 0, "num_predict": 3000},
         )
-        raw = _clean_llm_output(response["message"]["content"])
-        try:
-            # Extract JSON array safely
-            start = raw.find("[")
-            end = raw.rfind("]") + 1
-            if start != -1 and end > start:
-                return json.loads(raw[start:end])
+        raw = response["message"]["content"].strip()
+
+        if raw.startswith("NOTHING"):
             return []
-        except (json.JSONDecodeError, Exception):
-            return []
+
+        results = []
+        blocks = re.findall(r'PAGE_START\s*(.*?)\s*PAGE_END', raw, re.DOTALL)
+        for block in blocks:
+            lines = block.strip().splitlines()
+            filename = None
+            body_lines = []
+            in_body = False
+            for line in lines:
+                if in_body:
+                    body_lines.append(line)
+                elif line.startswith("filename:"):
+                    filename = line.split(":", 1)[1].strip()
+                elif line == "":
+                    in_body = True
+            if filename:
+                results.append({"filename": filename, "content": "\n".join(body_lines).strip()})
+        return results
