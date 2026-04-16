@@ -18,6 +18,7 @@ Instead of re-deriving answers from raw documents on every query (like RAG), lok
 - **Lint & autofix** — health-check the wiki for broken wikilinks, orphan pages, missing index entries, and frontmatter issues; auto-fix with `--autofix`
 - **Default vault** — set once with `lokiwiki init`, never type the path again
 - **Fully local** — runs on Ollama with quantized models; no data leaves your machine
+- **Git versioning** — automatic repo init, backups, and rollback built into the vault
 
 ---
 
@@ -94,7 +95,7 @@ lokiwiki query "What is the main contribution of this paper?"
 ```bash
 lokiwiki lint              # report only
 lokiwiki lint --suggest    # report + LLM suggestions
-lokiwiki lint --autofix    # report + LLM fixes broken links and orphans, not available yet
+lokiwiki lint --autofix    # report + LLM fixes broken links and orphans
 ```
 
 ---
@@ -107,6 +108,9 @@ lokiwiki ingest FILE           Ingest a document page by page into the wiki
 lokiwiki query "QUESTION"      Ask a question answered from wiki pages
 lokiwiki lint                  Health-check the wiki for issues
 lokiwiki config                View or update lokiwiki settings
+lokiwiki init_git [--vault]   Initialize Git repository in the vault for versioning
+lokiwiki backup               Create a Git backup / commit of the current vault state
+lokiwiki rollback             Rollback to a previous Git commit
 ```
 
 ### Key options
@@ -115,7 +119,7 @@ lokiwiki config                View or update lokiwiki settings
 lokiwiki ingest FILE --model qwen2.5:7b    Use a specific Ollama model
 lokiwiki ingest FILE --start 5             Resume ingestion from page 5
 lokiwiki query "..." --save                Save the answer as a new wiki page
-lokiwiki lint --autofix                    Automatically fix wiki issues with LLM, Not available yet
+lokiwiki lint --autofix                    Automatically fix wiki issues with LLM (broken links, orphans, etc.)
 lokiwiki config --set-vault PATH           Change default vault
 ```
 
@@ -145,7 +149,7 @@ lokiwiki config --set-vault PATH           Change default vault
 PDF → split by page → for each page:
     load current index.md
     send page + index to LLM
-    LLM returns JSON: {pages to create/update, index update, log entry}
+    LLM returns Plain text format {Answer, Sources, Suggested File name}
     write wiki pages with frontmatter + wikilinks
     update index.md and log.md
 ```

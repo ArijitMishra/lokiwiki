@@ -21,3 +21,6 @@ lokiwiki = "lokiwiki.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-mock>=3.14", "typer[all]"]
