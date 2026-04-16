@@ -3,4 +3,7 @@ __pycache__/
 *.pyc
 .DS_Store
 *lokiwiki.egg-info*
+src/*lokiwiki.egg-info*
 .gitignore
+*txt
+*json
