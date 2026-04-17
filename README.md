@@ -31,6 +31,7 @@ my-wiki/
 │   ├── Concepts/
 │   ├── Sources/
 │   └── ...
+├── toBeProcessed/    ← drop clipped articles here, processed by process-queue
 ├── config/
 │   └── agents.md ← schema and instructions for the LLM
 ├── index.md      ← catalog of all wiki pages (LLM reads this on every query)
@@ -80,6 +81,10 @@ lokiwiki ingest path/to/paper.pdf
 
 lokiwiki processes the document page by page. Each page is sent to the LLM, which creates or updates wiki pages with proper YAML frontmatter and `[[Wikilinks]]`.
 
+### 4b. Clip web articles (optional)
+Use Obsidian Web Clipper to save articles directly to `toBeProcessed/`, then run:
+lokiwiki process-queue
+
 ### 5. Open in Obsidian
 
 Open the `my-wiki/` folder as a vault in Obsidian. Hit `Ctrl+G` for the graph view.
@@ -111,6 +116,7 @@ lokiwiki config                View or update lokiwiki settings
 lokiwiki init_git [--vault]   Initialize Git repository in the vault for versioning
 lokiwiki backup               Create a Git backup / commit of the current vault state
 lokiwiki rollback             Rollback to a previous Git commit
+lokiwiki process-queue        Ingest all files in toBeProcessed/ and move them to raw/
 ```
 
 ### Key options

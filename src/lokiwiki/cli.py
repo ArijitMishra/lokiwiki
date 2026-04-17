@@ -56,6 +56,7 @@ def init(
     (vault_path / "raw").mkdir(parents=True, exist_ok=True)
     (vault_path / "wiki").mkdir(parents=True, exist_ok=True)
     (vault_path / "config").mkdir(parents=True, exist_ok=True)
+    (vault_path / "toBeProcessed").mkdir(parents=True, exist_ok=True)
 
     (vault_path / "index.md").write_text("# My LLM Wiki Index\n\n", encoding="utf-8")
     (vault_path / "log.md").write_text("# Ingestion Log\n\n", encoding="utf-8")
@@ -463,6 +464,39 @@ related: {related_str}
     console.print(f"\n[green]✅ Ingest complete.[/green] {pages_written} page(s) written across {total_chunks_processed} chunks.")
     console.print("[dim]Open your vault in Obsidian to explore the updated wiki.[/dim]")
 
+@app.command()
+def process_queue(
+    vault: str = typer.Option(None, "--vault", "-v"),
+    model: str = typer.Option("qwen2.5:7b", "--model", "-m"),
+):
+    """Ingest all files in toBeProcessed/ and move them to raw/ when done."""
+    vault_path = get_vault(vault)
+    queue_dir = vault_path / "toBeProcessed"
+    raw_dir = vault_path / "raw"
+
+    queue_dir.mkdir(exist_ok=True)
+    raw_dir.mkdir(exist_ok=True)
+    ingest(source_path=queue_dir, vault=vault, model=model, start_page=0)
+
+    # supported = {".pdf", ".txt", ".md"}
+    # files = [f for f in queue_dir.iterdir() if f.suffix.lower() in supported]
+
+    # if not files:
+    #     console.print("[yellow]No files found in toBeProcessed/[/yellow]")
+    #     raise typer.Exit()
+
+    # console.print(f"[blue]📥 Found {len(files)} file(s) to process[/blue]")
+
+    # for file_path in files:
+    #     console.print(f"\n[blue]📄 Ingesting:[/blue] {file_path.name}")
+    #     try:
+    #         ingest(source_path=str(file_path), vault=vault, model=model)
+    #         file_path.rename(raw_dir / file_path.name)
+    #         console.print(f"[green]✅ Moved to raw/{file_path.name}[/green]")
+    #     except Exception as e:
+    #         console.print(f"[red]Failed {file_path.name}, leaving in toBeProcessed/:[/red] {e}")
+
+    console.print(f"\n[green]✅ Queue processing complete.[/green]")
 
 @app.command()
 def config(
