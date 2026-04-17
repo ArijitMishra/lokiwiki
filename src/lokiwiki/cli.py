@@ -478,24 +478,6 @@ def process_queue(
     raw_dir.mkdir(exist_ok=True)
     ingest(source_path=queue_dir, vault=vault, model=model, start_page=0)
 
-    # supported = {".pdf", ".txt", ".md"}
-    # files = [f for f in queue_dir.iterdir() if f.suffix.lower() in supported]
-
-    # if not files:
-    #     console.print("[yellow]No files found in toBeProcessed/[/yellow]")
-    #     raise typer.Exit()
-
-    # console.print(f"[blue]📥 Found {len(files)} file(s) to process[/blue]")
-
-    # for file_path in files:
-    #     console.print(f"\n[blue]📄 Ingesting:[/blue] {file_path.name}")
-    #     try:
-    #         ingest(source_path=str(file_path), vault=vault, model=model)
-    #         file_path.rename(raw_dir / file_path.name)
-    #         console.print(f"[green]✅ Moved to raw/{file_path.name}[/green]")
-    #     except Exception as e:
-    #         console.print(f"[red]Failed {file_path.name}, leaving in toBeProcessed/:[/red] {e}")
-
     console.print(f"\n[green]✅ Queue processing complete.[/green]")
 
 @app.command()
