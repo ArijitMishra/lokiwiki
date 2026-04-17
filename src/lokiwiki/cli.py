@@ -5,6 +5,8 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 import json
 import subprocess
+from pylatexenc.latex2text import LatexNodes2Text
+import re 
 
 console = Console()
 
@@ -476,7 +478,24 @@ def process_queue(
 
     queue_dir.mkdir(exist_ok=True)
     raw_dir.mkdir(exist_ok=True)
-    ingest(source_path=queue_dir, vault=vault, model=model, start_page=0)
+
+    supported = {".pdf", ".txt", ".md"}
+    files = [f for f in queue_dir.iterdir() if f.suffix.lower() in supported]
+
+    if not files:
+        console.print("[yellow]No files found in toBeProcessed/[/yellow]")
+        raise typer.Exit()
+
+    console.print(f"[blue]📥 Found {len(files)} file(s) to process[/blue]")
+
+    for file_path in files:
+        console.print(f"\n[blue]📄 Ingesting:[/blue] {file_path.name}")
+        try:
+            ingest(source_path=str(file_path), vault=vault, model=model, start_page=0)
+            file_path.rename(raw_dir / file_path.name)
+            console.print(f"[green]✅ Moved to raw/{file_path.name}[/green]")
+        except Exception as e:
+            console.print(f"[red]Failed {file_path.name}, leaving in toBeProcessed/:[/red] {e}")
 
     console.print(f"\n[green]✅ Queue processing complete.[/green]")
 
@@ -541,7 +560,10 @@ def query(
     # Step 4: Print the answer
     console.print("\n" + "─" * 60)
     console.print(f"[bold]Q: {question}[/bold]\n")
-    console.print(result.get("answer", "No answer returned."))
+    #console.print(result.get("answer", "No answer returned."))
+    from rich.markdown import Markdown
+    answer = render_for_terminal(result.get("answer", "No answer returned."))
+    console.print(Markdown(answer))
     console.print("\n[dim]Sources: " + ", ".join(result.get("sources", [])) + "[/dim]")
     console.print("─" * 60)
 
@@ -748,6 +770,25 @@ related: {fm.get('related', [])}
             suggestions = llm.lint_suggestions(str(report), index)
         console.print("\n[bold]LLM Suggestions:[/bold]")
         console.print(suggestions)
+
+def render_for_terminal(text: str) -> str:
+    """Convert LaTeX expressions to unicode for terminal display."""
+    def replace_latex(match):
+        try:
+            return LatexNodes2Text().latex_to_text(match.group(1))
+        except Exception:
+            return match.group(0)
+
+    # $$...$$ block math
+    text = re.sub(r'\$\$(.+?)\$\$', replace_latex, text, flags=re.DOTALL)
+    # $...$ inline math
+    text = re.sub(r'\$(.+?)\$', replace_latex, text)
+    # \[...\] block math
+    text = re.sub(r'\\\[(.+?)\\\]', replace_latex, text, flags=re.DOTALL)
+    # \(...\) inline math
+    text = re.sub(r'\\\((.+?)\\\)', replace_latex, text)
+
+    return text
 
 if __name__ == "__main__":
     app()
