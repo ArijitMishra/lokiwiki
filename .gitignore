@@ -10,3 +10,4 @@ src/*lokiwiki.egg-info*
 src/lokiwiki.egg-info/PKG-INFO
 src/lokiwiki.egg-info/requires.txt
 src/lokiwiki.egg-info/SOURCES.txt
+src/lokiwiki.egg-info/*

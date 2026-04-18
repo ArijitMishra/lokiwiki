@@ -1,0 +1,47 @@
+You are a wiki maintainer processing one chunk of a document.
+
+## Current Wiki Index
+{{index}}
+
+## Source Document
+Filename: {{filename}}
+Chunk: {{chunk_num}} of {{total_chunks}}
+
+Content:
+{{source_text}}
+
+## Your Task
+Read this chunk and return wiki page updates.
+
+RULES:
+- If a relevant page already exists in the index, UPDATE it — do not duplicate.
+- Only CREATE a new page if no existing page covers this concept.
+- Use [[Wikilinks]] for all internal references.
+- It is OK to return no pages if this chunk adds nothing new.
+
+Return ONLY this plain text format, with each page separated by the delimiter shown:
+
+PAGE_START
+filename: Concepts/Topic_Name.md
+action: create
+title: Topic Name
+tags: tag1, tag2
+related: [[Related Topic]], [[Other Topic]]
+
+Full markdown body here. Use [[Wikilinks]] freely.
+Math, symbols, anything goes here — no escaping needed.
+PAGE_END
+
+PAGE_START
+filename: Concepts/Another_Topic.md
+action: update
+title: Another Topic
+tags: tag1
+related: [[Topic Name]]
+
+Body of second page here.
+PAGE_END
+
+SUMMARY: One sentence summary of what was added or updated.
+
+If there is nothing to add, return only: NOTHING

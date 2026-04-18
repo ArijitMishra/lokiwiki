@@ -7,6 +7,10 @@ import json
 import subprocess
 from pylatexenc.latex2text import LatexNodes2Text
 import re 
+from collections import Counter
+from rich.table import Table
+from rich.panel import Panel
+from rich.columns import Columns
 
 console = Console()
 
@@ -337,7 +341,7 @@ def ingest(
     )
     from lokiwiki.core.llm import LLM
     from pathlib import Path
-
+    
     vault_path = get_vault(vault)
     if not vault_path.exists():
         console.print(f"[red]Vault not found:[/red] {vault_path}")
@@ -359,7 +363,7 @@ def ingest(
 
     pages_written = 0
     total_chunks_processed = 0
-
+    failed_chunks = 0
     # Process each file found
     for file_path in files_to_process:
         console.print(f"[blue]📄 Reading source:[/blue] {file_path}")
@@ -403,6 +407,7 @@ def ingest(
                 except Exception as e:
                     console.print(f"[red]LLM error on page {i} of {filename}:[/red] {e}")
                     console.print("[dim]Skipping this page and continuing...[/dim]")
+                    failed_chunks += 1
                     continue
 
             # Step 4: Write pages
@@ -462,9 +467,15 @@ related: {related_str}
                     console.print(f"      • {c}")
 
             total_chunks_processed += 1
-
+    
     console.print(f"\n[green]✅ Ingest complete.[/green] {pages_written} page(s) written across {total_chunks_processed} chunks.")
     console.print("[dim]Open your vault in Obsidian to explore the updated wiki.[/dim]")
+    if failed_chunks > 0:
+        console.print(f"[yellow]⚠️  {failed_chunks} chunk(s) failed.[/yellow]")
+        return False
+    if total_chunks_processed == 0 or pages_written == 0:
+        return False
+    return True
 
 @app.command()
 def process_queue(
@@ -491,9 +502,13 @@ def process_queue(
     for file_path in files:
         console.print(f"\n[blue]📄 Ingesting:[/blue] {file_path.name}")
         try:
-            ingest(source_path=str(file_path), vault=vault, model=model, start_page=0)
-            file_path.rename(raw_dir / file_path.name)
-            console.print(f"[green]✅ Moved to raw/{file_path.name}[/green]")
+            success = ingest(source_path=str(file_path), vault=vault, model=model, start_page=0)
+            if success:
+                file_path.rename(raw_dir / file_path.name)
+                console.print(f"[green]✅ Moved to raw/{file_path.name}[/green]")
+            else:
+                console.print(f"[yellow]⚠️  Completed with errors — leaving {file_path.name} in toBeProcessed/[/yellow]")
+
         except Exception as e:
             console.print(f"[red]Failed {file_path.name}, leaving in toBeProcessed/:[/red] {e}")
 
@@ -513,6 +528,25 @@ def config(
         console.print(f"Default vault: [bold]{cfg.get('default_vault', 'not set')}[/bold]")
     else:
         console.print("[yellow]No config found. Run `lokiwiki init <path>` to set a default vault.[/yellow]")
+
+def render_for_terminal(text: str) -> str:
+    """Convert LaTeX expressions to unicode for terminal display."""
+    def replace_latex(match):
+        try:
+            return LatexNodes2Text().latex_to_text(match.group(1))
+        except Exception:
+            return match.group(0)
+
+    # $$...$$ block math
+    text = re.sub(r'\$\$(.+?)\$\$', replace_latex, text, flags=re.DOTALL)
+    # $...$ inline math
+    text = re.sub(r'\$(.+?)\$', replace_latex, text)
+    # \[...\] block math
+    text = re.sub(r'\\\[(.+?)\\\]', replace_latex, text, flags=re.DOTALL)
+    # \(...\) inline math
+    text = re.sub(r'\\\((.+?)\\\)', replace_latex, text)
+
+    return text
 
 @app.command()
 def query(
@@ -771,24 +805,150 @@ related: {fm.get('related', [])}
         console.print("\n[bold]LLM Suggestions:[/bold]")
         console.print(suggestions)
 
-def render_for_terminal(text: str) -> str:
-    """Convert LaTeX expressions to unicode for terminal display."""
-    def replace_latex(match):
-        try:
-            return LatexNodes2Text().latex_to_text(match.group(1))
-        except Exception:
-            return match.group(0)
+@app.command()
+def stats(
+    vault: str = typer.Option(None, "--vault", "-v"),
+):
+    """Show a dashboard of wiki statistics."""
+    from lokiwiki.core.files import get_all_wiki_pages, load_index
 
-    # $$...$$ block math
-    text = re.sub(r'\$\$(.+?)\$\$', replace_latex, text, flags=re.DOTALL)
-    # $...$ inline math
-    text = re.sub(r'\$(.+?)\$', replace_latex, text)
-    # \[...\] block math
-    text = re.sub(r'\\\[(.+?)\\\]', replace_latex, text, flags=re.DOTALL)
-    # \(...\) inline math
-    text = re.sub(r'\\\((.+?)\\\)', replace_latex, text)
+    vault_path = get_vault(vault)
+    wiki_dir = vault_path / "wiki"
+    raw_dir = vault_path / "raw"
 
-    return text
+    all_pages = get_all_wiki_pages(vault_path)
+
+    if not all_pages:
+        console.print("[yellow]No wiki pages found. Try ingesting some documents first.[/yellow]")
+        raise typer.Exit()
+
+    # ── Basic counts ──────────────────────────────────────────────
+    total_pages = len(all_pages)
+    total_sources = len(list(raw_dir.rglob("*"))) if raw_dir.exists() else 0
+    total_words = 0
+    total_links = 0
+    broken_links = 0
+    orphan_count = 0
+    all_tags = []
+    pages_by_category = Counter()
+    inbound_counts = Counter()
+    page_word_counts = {}
+
+    existing_stems = {p.stem.lower() for p in all_pages}
+
+    for page in all_pages:
+        content = page.read_text(encoding="utf-8", errors="ignore")
+        rel = page.relative_to(wiki_dir).as_posix()
+
+        # Category from subfolder
+        parts = page.relative_to(wiki_dir).parts
+        category = parts[0] if len(parts) > 1 else "root"
+        pages_by_category[category] += 1
+
+        # Word count
+        words = len(content.split())
+        total_words += words
+        page_word_counts[rel] = words
+
+        # Tags from frontmatter
+        tag_match = re.search(r'^tags:\s*\[(.+?)\]', content, re.MULTILINE)
+        if tag_match:
+            tags = [t.strip() for t in tag_match.group(1).split(",")]
+            all_tags.extend(tags)
+
+        # Wikilinks
+        wikilinks = re.findall(r'\[\[([^\]]+)\]\]', content)
+        total_links += len(wikilinks)
+        for link in wikilinks:
+            target = link.split("|")[0].strip()
+            slug = target.lower().replace(" ", "_")
+            matched = any(s == slug or s == target.lower() for s in existing_stems)
+            if matched:
+                inbound_counts[target.lower().replace(" ", "_")] += 1
+            else:
+                broken_links += 1
+
+    # Orphans — pages with no inbound links
+    for page in all_pages:
+        slug = page.stem.lower()
+        if inbound_counts.get(slug, 0) == 0:
+            orphan_count += 1
+
+    # Most linked pages
+    most_linked = [
+        (slug, count) for slug, count in inbound_counts.most_common(5)
+    ]
+
+    # Largest pages
+    largest_pages = sorted(page_word_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    # Last ingest from log.md
+    last_ingest = "unknown"
+    log_file = vault_path / "log.md"
+    if log_file.exists():
+        log_text = log_file.read_text(encoding="utf-8")
+        match = re.search(r'## \[(\d{4}-\d{2}-\d{2})\] ingest', log_text)
+        if match:
+            last_ingest = match.group(1)
+
+    # Top tags
+    top_tags = Counter(all_tags).most_common(8)
+
+    # ── Render ────────────────────────────────────────────────────
+    console.print()
+    console.print(Panel("[bold]📊 Lokiwiki Stats[/bold]", expand=False))
+    console.print()
+
+    # Summary table
+    summary = Table(show_header=False, box=None, padding=(0, 2))
+    summary.add_column(style="dim")
+    summary.add_column(style="bold")
+    summary.add_row("Total wiki pages", str(total_pages))
+    summary.add_row("Total source files", str(total_sources))
+    summary.add_row("Total words", f"{total_words:,}")
+    summary.add_row("Total wikilinks", str(total_links))
+    summary.add_row("Broken wikilinks", f"[red]{broken_links}[/red]" if broken_links else "[green]0[/green]")
+    summary.add_row("Orphan pages", f"[yellow]{orphan_count}[/yellow]" if orphan_count else "[green]0[/green]")
+    summary.add_row("Last ingest", last_ingest)
+    console.print(summary)
+    console.print()
+
+    # Pages by category
+    cat_table = Table(title="Pages by Category", box=None, padding=(0, 2))
+    cat_table.add_column("Category", style="cyan")
+    cat_table.add_column("Pages", style="bold")
+    for cat, count in pages_by_category.most_common():
+        cat_table.add_row(cat, str(count))
+
+    # Most linked pages
+    linked_table = Table(title="Most Linked Pages", box=None, padding=(0, 2))
+    linked_table.add_column("Page", style="cyan")
+    linked_table.add_column("Inbound links", style="bold")
+    for slug, count in most_linked:
+        linked_table.add_row(slug.replace("_", " ").title(), str(count))
+
+    console.print(Columns([cat_table, linked_table], equal=True))
+    console.print()
+
+    # Largest pages
+    large_table = Table(title="Largest Pages", box=None, padding=(0, 2))
+    large_table.add_column("Page", style="cyan")
+    large_table.add_column("Words", style="bold")
+    for rel, words in largest_pages:
+        large_table.add_row(rel, f"{words:,}")
+    console.print(large_table)
+    console.print()
+
+    # Top tags
+    if top_tags:
+        tags_table = Table(title="Top Tags", box=None, padding=(0, 2))
+        tags_table.add_column("Tag", style="cyan")
+        tags_table.add_column("Count", style="bold")
+        for tag, count in top_tags:
+            tags_table.add_row(tag, str(count))
+        console.print(tags_table)
+        console.print()
+
 
 if __name__ == "__main__":
     app()

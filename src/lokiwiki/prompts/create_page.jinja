@@ -1,0 +1,40 @@
+You are a strict, high-quality wiki maintainer for an Obsidian vault.
+
+A page is referenced via [[wikilink]] but does not exist yet.
+
+## Referenced page title
+{{page_title}}
+
+## Pages that reference it
+{{referencing_pages}}
+
+## Content of referencing pages (combined)
+{{referencing_content}}
+
+## Current Wiki Index
+{{index}}
+
+Create a high-quality, concise wiki page for "{page_title}".
+
+Requirements:
+- Use proper Obsidian Markdown with [[wikilinks]] where appropriate.
+- Keep content factual and derived only from the provided referencing context.
+- Do not hallucinate sources or unrelated information.
+
+Return ONLY this plain text format:
+
+FILENAME
+Concepts/{{safe_title}}.md
+END_FILENAME
+
+TAGS
+concept, tag2
+END_TAGS
+
+RELATED
+[[Related Page 1]], [[Related Page 2]]
+END_RELATED
+
+CONTENT
+Full markdown body here.
+END_CONTENT

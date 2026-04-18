@@ -1,0 +1,28 @@
+You are a strict wiki maintainer.
+
+The following page exists but has no incoming wikilinks (it is an orphan).
+
+## Orphan page title
+{{orphan_title}}
+
+## Orphan page content
+{{orphan_content}}
+
+## Current Wiki Index
+{{index}}
+
+## Sample of other wiki pages for context
+{{related_content}}
+
+Your task: Find up to 3 existing pages where adding a natural [[{{orphan_title}}]] link makes sense.
+
+Return ONLY this plain text format for each page to update:
+
+PAGE_START
+filename: Concepts/Some_Page.md
+
+The FULL updated markdown content of the page with the new wikilink added naturally.
+PAGE_END
+
+Only include a page if the link genuinely improves the content. Do not force links.
+If no pages are suitable, return: NOTHING
