@@ -14,31 +14,53 @@ from rich.columns import Columns
 
 console = Console()
 
-# Config file lives at ~/.lokiwiki/config.json
-CONFIG_DIR = Path.home() / ".lokiwiki"
-CONFIG_FILE = CONFIG_DIR / "config.json"
+# Global config (optional, for default vault)
+GLOBAL_CONFIG_DIR = Path.home() / ".lokiwiki"
+GLOBAL_CONFIG_FILE = GLOBAL_CONFIG_DIR / "config.json"
 
+VAULT_CONFIG_NAME = ".lokiwiki/config.json"
 
-def save_config(vault_path: str):
-    CONFIG_DIR.mkdir(exist_ok=True)
-    config = {"default_vault": str(vault_path)}
-    CONFIG_FILE.write_text(json.dumps(config, indent=2))
+def get_vault_config_path(vault_path: Path) -> Path:
+    return vault_path / VAULT_CONFIG_NAME
 
-
-def load_config() -> dict:
-    if CONFIG_FILE.exists():
-        return json.loads(CONFIG_FILE.read_text())
+def load_vault_config(vault_path: Path) -> dict:
+    config_path = get_vault_config_path(vault_path)
+    if config_path.exists():
+        try:
+            return json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
     return {}
 
+def save_vault_config(vault_path: Path, config: dict):
+    config_path = get_vault_config_path(vault_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
-def get_vault(vault_override: str | None) -> Path:
+# def save_config(vault_path: str):
+#     CONFIG_DIR.mkdir(exist_ok=True)
+#     config = {"default_vault": str(vault_path)}
+#     CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+
+# def load_config() -> dict:
+#     if CONFIG_FILE.exists():
+#         return json.loads(CONFIG_FILE.read_text())
+#     return {}
+
+
+def get_vault(vault_override: str | None = None) -> Path:
     if vault_override:
         return Path(vault_override).resolve()
-    config = load_config()
-    if "default_vault" in config:
-        return Path(config["default_vault"])
-    console.print("[red]No vault specified.[/red]")
-    console.print("Run [bold]lokiwiki init <vault-path>[/bold] first.")
+    # fallback to global default_vault if you have it
+    if GLOBAL_CONFIG_FILE.exists():
+        try:
+            global_config = json.loads(GLOBAL_CONFIG_FILE.read_text())
+            if "default_vault" in global_config:
+                return Path(global_config["default_vault"])
+        except Exception:
+            pass
+    console.print("[red]No vault specified and no default vault found.[/red]")
     raise typer.Exit(1)
 
 app = typer.Typer(
@@ -46,26 +68,64 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+def get_effective_model(vault_path: Path, model_override: str | None) -> str:
+    if model_override:
+        return model_override
+    
+    vault_config = load_vault_config(vault_path)
+    if "default_model" in vault_config:
+        return vault_config["default_model"]
+    
+    # Global fallback (optional)
+    if GLOBAL_CONFIG_FILE.exists():
+        try:
+            g = json.loads(GLOBAL_CONFIG_FILE.read_text())
+            if "default_model" in g:
+                return g["default_model"]
+        except Exception:
+            pass
+    
+    return "qwen2.5:7b"
+
 @app.command()
 def init(
-    vault_name: str = typer.Argument("my-wiki", help="Name of the vault folder to create")
+    vault_path: str = typer.Argument("my-wiki", help="Path and name of the vault folder to create"),
+    model: str = typer.Option(None, "--model", "-m", help="Default model for this vault")
 ):
     """Initialize a new Obsidian-ready LLM Wiki vault."""
-    vault_path = Path(vault_name).resolve()
-
-    if vault_path.exists():
-        console.print(f"[yellow]⚠️  Vault already exists:[/yellow] {vault_path}")
-        save_config(str(vault_path))
+    vault = Path(vault_path).resolve()
+    if vault.exists():
+        console.print(f"[yellow]⚠️  Vault already exists:[/yellow] {vault}")
+        # Save as default even if vault already exists
+        GLOBAL_CONFIG_DIR.mkdir(exist_ok=True)
+        global_cfg = {}
+        if GLOBAL_CONFIG_FILE.exists():
+            try:
+                global_cfg = json.loads(GLOBAL_CONFIG_FILE.read_text())
+            except Exception:
+                pass
+        global_cfg["default_vault"] = str(vault)
+        GLOBAL_CONFIG_FILE.write_text(json.dumps(global_cfg, indent=2))
         console.print(f"[green]✅ Set as default vault.[/green]")
         return
+    vault.mkdir(parents=True, exist_ok=True)
+    
+    # Create .lokiwiki/config.json
+    vault_config = {"created_at": date.today().isoformat()}
+    if model:
+        vault_config["default_model"] = model
+    else:
+        vault_config["default_model"] = "qwen2.5:7b"   # sensible default
+    
+    save_vault_config(vault, vault_config)
 
-    (vault_path / "raw").mkdir(parents=True, exist_ok=True)
-    (vault_path / "wiki").mkdir(parents=True, exist_ok=True)
-    (vault_path / "config").mkdir(parents=True, exist_ok=True)
-    (vault_path / "toBeProcessed").mkdir(parents=True, exist_ok=True)
+    (vault / "raw").mkdir(parents=True, exist_ok=True)
+    (vault / "wiki").mkdir(parents=True, exist_ok=True)
+    (vault / "config").mkdir(parents=True, exist_ok=True)
+    (vault / "toBeProcessed").mkdir(parents=True, exist_ok=True)
 
-    (vault_path / "index.md").write_text("# My LLM Wiki Index\n\n", encoding="utf-8")
-    (vault_path / "log.md").write_text("# Ingestion Log\n\n", encoding="utf-8")
+    (vault / "index.md").write_text("# My LLM Wiki Index\n\n", encoding="utf-8")
+    (vault / "log.md").write_text("# Ingestion Log\n\n", encoding="utf-8")
 
     agents_content = """# LLM Wiki — Agent Schema (Obsidian Edition)
 
@@ -169,17 +229,17 @@ Check for:
   Create new pages when a concept deserves its own entry.
 - When in doubt about categorization, put it in Concepts/ and link liberally.
 """
-    (vault_path / "config" / "agents.md").write_text(agents_content, encoding="utf-8")
+    (vault / "config" / "agents.md").write_text(agents_content, encoding="utf-8")
 
     try:
-        git_dir = vault_path / ".git"
+        git_dir = vault / ".git"
         if git_dir.exists():
             console.print("[green]Git repository already exists.[/green]")
         else:
-            subprocess.run(["git", "init"], cwd=vault_path, check=True, capture_output=True)
+            subprocess.run(["git", "init"], cwd=vault, check=True, capture_output=True)
             
             # Create useful .gitignore
-            gitignore_path = vault_path / ".gitignore"
+            gitignore_path = vault / ".gitignore"
             gitignore_path.write_text(
                 """# Lokiwiki Gitignore
 raw/                  # Raw source files (immutable, usually large)
@@ -196,10 +256,10 @@ llm_raw_output.txt    # Temporary debug files
             )
 
             # Stage and make initial commit
-            subprocess.run(["git", "add", "."], cwd=vault_path, check=True, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=vault, check=True, capture_output=True)
             subprocess.run(
                 ["git", "commit", "-m", "Initial lokiwiki vault setup"],
-                cwd=vault_path,
+                cwd=vault,
                 check=True,
                 capture_output=True
             )
@@ -211,9 +271,19 @@ llm_raw_output.txt    # Temporary debug files
         console.print("[dim]You can run `lokiwiki init-git` manually later.[/dim]")
     except FileNotFoundError:
         console.print("[yellow]Git command not found. Please install Git to enable automatic versioning.[/yellow]")
+    
+    GLOBAL_CONFIG_DIR.mkdir(exist_ok=True)
+    global_cfg = {}
+    if GLOBAL_CONFIG_FILE.exists():
+        try:
+            global_cfg = json.loads(GLOBAL_CONFIG_FILE.read_text())
+        except Exception:
+            pass
+    global_cfg["default_vault"] = str(vault)
+    GLOBAL_CONFIG_FILE.write_text(json.dumps(global_cfg, indent=2))
 
-    save_config(str(vault_path))
-    console.print(f"[green]✅ Vault created:[/green] {vault_path}")
+    console.print(f"[green]✅ Vault created:[/green] {vault}")
+    console.print(f"   Default model: {vault_config['default_model']}")
     console.print("→ Open this folder in Obsidian")
     console.print("→ Then run: lokiwiki ingest <path-to-file>")
 
@@ -331,7 +401,7 @@ def rollback(
 def ingest(
     source_path: str = typer.Argument(..., help="Path to file or folder to ingest (PDF, TXT, MD)"),
     vault:  str  = typer.Option(None, "--vault",  "-v", help="Vault path (uses default if not set)"),
-    model:  str  = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model to use"),
+    model:  str  = typer.Option(None, "--model", "-m", help="Ollama model to use"),
     start_page: int = typer.Option(1, "--start", "-s", help="Start from this page/chunk number (1-indexed)"),
 ):
     """Ingest a document page-by-page into the wiki."""
@@ -346,6 +416,8 @@ def ingest(
     if not vault_path.exists():
         console.print(f"[red]Vault not found:[/red] {vault_path}")
         raise typer.Exit(1)
+    effective_model = get_effective_model(vault_path, model)
+    console.print(f"Using model: [bold cyan]{effective_model}[/bold cyan]")
 
     # Determine files to process (auto-detect directory, non-recursive)
     src = Path(source_path)
@@ -358,7 +430,7 @@ def ingest(
     else:
         files_to_process = [src]
 
-    llm = LLM(model=model)
+    llm = LLM(model=effective_model)
     today = date.today().isoformat()
 
     pages_written = 0
@@ -423,42 +495,42 @@ def ingest(
                 sources_str = "[" + ", ".join(f'"{s}"' for s in fm.get("sources", [])) + "]"
 
                 full_content = f"""---
-title: "{fm.get('title', filename_out)}"
-tags: {tags_str}
-created: "{fm.get('created', today)}"
-updated: "{today}"
-sources: {sources_str}
-related: {related_str}
----
+                                title: "{fm.get('title', filename_out)}"
+                                tags: {tags_str}
+                                created: "{fm.get('created', today)}"
+                                updated: "{today}"
+                                sources: {sources_str}
+                                related: {related_str}
+                                ---
 
-{body}
-"""
+                                {body}
+                                """
                 write_wiki_page(vault_path, filename_out, full_content)
                 pages_written += 1
                 console.print(f"   [dim][{action}][/dim] wiki/{filename_out}")
 
             # Step 5: Update index and log after each chunk
-                pages_result = result.get("pages", [])
-                if pages_result:
-                    index_file = vault_path / "index.md"
-                    current_index = index_file.read_text(encoding="utf-8")
-                    new_entries = []
-                    for page in pages_result:
-                        fm = page["frontmatter"]
-                        title = fm.get("title", "Untitled")
-                        fname = page.get("filename", "")
-                        tags = ", ".join(fm.get("tags", []))
-                        entry = f"- [{title}]({fname}) — {tags}"
-                        # Only add if not already in index
-                        if fname not in current_index:
-                            new_entries.append(entry)
-                    if new_entries:
-                        updated_index = current_index.rstrip() + "\n" + "\n".join(new_entries) + "\n"
-                        update_index(vault_path, updated_index)
+            pages_result = result.get("pages", [])
+            if pages_result:
+                index_file = vault_path / "index.md"
+                current_index = index_file.read_text(encoding="utf-8")
+                new_entries = []
+                for page in pages_result:
+                    fm = page["frontmatter"]
+                    title = fm.get("title", "Untitled")
+                    fname = page.get("filename", "")
+                    tags = ", ".join(fm.get("tags", []))
+                    entry = f"- [{title}]({fname}) — {tags}"
+                    # Only add if not already in index
+                    if fname not in current_index:
+                        new_entries.append(entry)
+                if new_entries:
+                    updated_index = current_index.rstrip() + "\n" + "\n".join(new_entries) + "\n"
+                    update_index(vault_path, updated_index)
 
-                if result.get("log_entry"):
-                    today = date.today().isoformat()
-                    append_log(vault_path, f"## [{today}] ingest chunk {i}/{total} | {filename}\n\n{result['log_entry']}")
+            if result.get("log_entry"):
+                today = date.today().isoformat()
+                append_log(vault_path, f"## [{today}] ingest chunk {i}/{total} | {filename}\n\n{result['log_entry']}")
 
             contradictions = result.get("contradictions", [])
             if contradictions:
@@ -480,10 +552,11 @@ related: {related_str}
 @app.command()
 def process_queue(
     vault: str = typer.Option(None, "--vault", "-v"),
-    model: str = typer.Option("qwen2.5:7b", "--model", "-m"),
+    model: str = typer.Option(None, "--model", "-m"),
 ):
     """Ingest all files in toBeProcessed/ and move them to raw/ when done."""
     vault_path = get_vault(vault)
+    effective_model = get_effective_model(vault_path, model)
     queue_dir = vault_path / "toBeProcessed"
     raw_dir = vault_path / "raw"
 
@@ -502,7 +575,7 @@ def process_queue(
     for file_path in files:
         console.print(f"\n[blue]📄 Ingesting:[/blue] {file_path.name}")
         try:
-            success = ingest(source_path=str(file_path), vault=vault, model=model, start_page=0)
+            success = ingest(source_path=str(file_path), vault=vault, model=effective_model, start_page=1)
             if success:
                 file_path.rename(raw_dir / file_path.name)
                 console.print(f"[green]✅ Moved to raw/{file_path.name}[/green]")
@@ -517,17 +590,43 @@ def process_queue(
 @app.command()
 def config(
     set_vault: str = typer.Option(None, "--set-vault", help="Set a new default vault path"),
+    set_model: str = typer.Option(None, "--set-model", help="Set default model for the current vault"),
+    vault: str = typer.Option(None, "--vault", "-v"),
 ):
     """View or update lokiwiki configuration."""
     if set_vault:
-        save_config(set_vault)
+        GLOBAL_CONFIG_DIR.mkdir(exist_ok=True)
+        cfg = {}
+        if GLOBAL_CONFIG_FILE.exists():
+            try:
+                cfg = json.loads(GLOBAL_CONFIG_FILE.read_text())
+            except Exception:
+                pass
+        cfg["default_vault"] = set_vault
+        GLOBAL_CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
         console.print(f"[green]✅ Default vault set to:[/green] {set_vault}")
         return
-    cfg = load_config()
-    if cfg:
-        console.print(f"Default vault: [bold]{cfg.get('default_vault', 'not set')}[/bold]")
-    else:
-        console.print("[yellow]No config found. Run `lokiwiki init <path>` to set a default vault.[/yellow]")
+
+    if set_model:
+        vault_path = get_vault(vault)
+        vault_cfg = load_vault_config(vault_path)
+        vault_cfg["default_model"] = set_model
+        save_vault_config(vault_path, vault_cfg)
+        console.print(f"[green]✅ Default model for this vault set to:[/green] {set_model}")
+        return
+
+    # View current config
+    vault_path = get_vault(vault)
+    vault_cfg = load_vault_config(vault_path)
+    global_cfg = {}
+    if GLOBAL_CONFIG_FILE.exists():
+        try:
+            global_cfg = json.loads(GLOBAL_CONFIG_FILE.read_text())
+        except Exception:
+            pass
+
+    console.print(f"Default vault:  [bold]{global_cfg.get('default_vault', 'not set')}[/bold]")
+    console.print(f"Default model:  [bold]{vault_cfg.get('default_model', 'not set (fallback: qwen2.5:7b)')}[/bold]")
 
 def render_for_terminal(text: str) -> str:
     """Convert LaTeX expressions to unicode for terminal display."""
@@ -552,7 +651,7 @@ def render_for_terminal(text: str) -> str:
 def query(
     question: str = typer.Argument(..., help="Question to ask your wiki"),
     vault:    str = typer.Option(None, "--vault", "-v", help="Vault path (uses default if not set)"),
-    model:    str = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model to use"),
+    model:    str = typer.Option(None, "--model", "-m", help="Ollama model to use"),
     save:     bool = typer.Option(False, "--save", "-s", help="Save the answer as a new wiki page"),
 ):
     """Ask a question and get an answer synthesized from your wiki."""
@@ -560,8 +659,9 @@ def query(
     from lokiwiki.core.llm import LLM
 
     vault_path = get_vault(vault)
+    effective_model = get_effective_model(vault_path, model)
     index = load_index(vault_path)
-    llm = LLM(model=model)
+    llm = LLM(model=effective_model)
 
     # Step 1: Find relevant pages
     console.print(f"[blue]🔍 Finding relevant pages...[/blue]")
@@ -630,7 +730,7 @@ related: []
 @app.command()
 def lint(
     vault:    str  = typer.Option(None,  "--vault",   "-v", help="Vault path"),
-    model:    str  = typer.Option("qwen2.5:7b", "--model", "-m", help="Ollama model"),
+    model:    str  = typer.Option(None, "--model", "-m", help="Ollama model"),
     suggest:  bool = typer.Option(False, "--suggest",  "-s", help="Get LLM suggestions only"),
     autofix:  bool = typer.Option(False, "--autofix",  "-a", help="Let LLM automatically fix broken links and orphans"),
 ):
@@ -648,8 +748,9 @@ def lint(
     from pathlib import Path
 
     vault_path = get_vault(vault)
+    effective_model = get_effective_model(vault_path, model)
     console.print(f"[blue]🔍 Linting wiki:[/blue] {vault_path}")
-
+    console.print(f"Using model: [bold cyan]{effective_model}[/bold cyan]")
     report = lint_wiki(vault_path)
 
     # ====================== PRINT REPORT ======================
@@ -710,7 +811,7 @@ def lint(
         if typer.confirm("Create a backup before autofix?", default=True):
             backup(vault=vault, message="Pre-autofix backup")
         console.print("\n[blue]🤖 Starting LLM-powered autofix...[/blue]")
-        llm = LLM(model=model)
+        llm = LLM(model=effective_model)
         index = load_index(vault_path)
         today = date.today().isoformat()
 
@@ -798,7 +899,7 @@ related: {fm.get('related', [])}
     elif suggest:
         console.print("\n[blue]🤖 Getting LLM suggestions...[/blue]")
         index = load_index(vault_path)
-        llm = LLM(model=model)
+        llm = LLM(model=effective_model)
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
             progress.add_task("LLM is reviewing the wiki...", total=None)
             suggestions = llm.lint_suggestions(str(report), index)

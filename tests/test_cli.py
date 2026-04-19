@@ -160,8 +160,9 @@ def test_backup_with_git(vault):
 
 # ─── no vault fallback ────────────────────────────────────────────────────────
 
-def test_command_fails_gracefully_without_vault(monkeypatch):
+def test_command_fails_gracefully_without_vault(monkeypatch, tmp_path):
     """Commands should exit cleanly when no vault is configured."""
-    monkeypatch.setattr("lokiwiki.cli.load_config", lambda: {})
+    fake_config = tmp_path / "nonexistent_config.json"
+    monkeypatch.setattr("lokiwiki.cli.GLOBAL_CONFIG_FILE", fake_config)
     result = runner.invoke(app, ["lint"])
     assert result.exit_code != 0 or "No vault" in result.stdout

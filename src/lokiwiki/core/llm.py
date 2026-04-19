@@ -118,7 +118,7 @@ class LLM:
         response = ollama.chat(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0, "num_predict": 3000},
+            options={"temperature": 0, "num_predict": 3000, "think": False},
         )
 
         raw = response["message"]["content"]
@@ -130,7 +130,7 @@ class LLM:
         response = ollama.chat(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0, "num_predict": 500},
+            options={"temperature": 0, "num_predict": 500, "think": False},
         )
         raw = response["message"]["content"]
         try:
@@ -151,7 +151,7 @@ class LLM:
         response = ollama.chat(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0, "num_predict": 2000},
+            options={"temperature": 0, "num_predict": 2000, "think": False},
         )
         return _parse_query_response(response["message"]["content"])
 
@@ -164,7 +164,7 @@ class LLM:
             response = ollama.chat(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0, "num_predict": 1500},
+                options={"temperature": 0, "num_predict": 1500, "think": False},
             )
             return response["message"]["content"].strip()
     
@@ -183,7 +183,7 @@ class LLM:
         response = ollama.chat(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0, "num_predict": 2500},
+            options={"temperature": 0, "num_predict": 2500, "think": False},
         )
         raw = response["message"]["content"]
 
@@ -217,7 +217,7 @@ class LLM:
         response = ollama.chat(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0, "num_predict": 3000},
+            options={"temperature": 0, "num_predict": 3000, "think": False},
         )
         raw = response["message"]["content"].strip()
 
