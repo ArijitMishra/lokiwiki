@@ -1,0 +1,64 @@
+{
+  "version": "1.0",
+  "description": "Golden question set for lokiwiki benchmark. Baseline results derived from 'The Illustrated Transformer' article.",
+  "questions": [
+    {
+      "id": "q01",
+      "type": "factual",
+      "question": "What is the main topic covered by the ingested documents?",
+      "reference_answer": "The primary subject matter is the Transformer model, a neural network architecture that uses attention mechanisms to improve neural machine translation and allows for highly parallelized training compared to previous sequence-to-sequence models.",
+      "notes": "Tests basic retrieval. Should always be answerable after ingest."
+    },
+    {
+      "id": "q02",
+      "type": "factual",
+      "question": "What are the key concepts introduced in the source material?",
+      "reference_answer": "Core concepts introduced include self-attention, multi-headed attention, encoder and decoder stacks, positional encoding, Query/Key/Value vectors, and residual connections with layer normalization.",
+      "notes": "Tests whether ingest correctly identifies and names concepts."
+    },
+    {
+      "id": "q03",
+      "type": "factual",
+      "question": "What methods or techniques are described in the documents?",
+      "reference_answer": "Specific methods described include the matrix calculation of self-attention (using Q, K, and V matrices), dot-product attention divided by 8 (the square root of the key dimension), softmax normalization, one-hot encoding for vocabulary, and decoding strategies like greedy decoding and beam search.",
+      "notes": "Tests specific factual extraction."
+    },
+    {
+      "id": "q04",
+      "type": "factual",
+      "question": "What results or findings are reported?",
+      "reference_answer": "The documents report that the Transformer outperforms the Google Neural Machine Translation model in specific tasks. A key structural finding is that the model's feed-forward layers do not have sequential dependencies, allowing execution to be highly parallelized (making it optimal for hardware like Cloud TPUs).",
+      "notes": "Tests numerical/factual fidelity."
+    },
+    {
+      "id": "q05",
+      "type": "synthesis",
+      "question": "How do the concepts in these documents relate to each other?",
+      "reference_answer": "The encoder stack processes an input sequence and transforms it into Key and Value matrices. These matrices are then passed to the 'encoder-decoder attention' layer in the decoder stack, allowing the decoder to focus on appropriate parts of the input sequence while generating the output translation.",
+      "notes": "Tests cross-page synthesis. Requires the model to read multiple wiki pages."
+    },
+    {
+      "id": "q06",
+      "type": "synthesis",
+      "question": "What are the limitations or open problems discussed across the documents?",
+      "reference_answer": "A key limitation of the raw self-attention mechanism is that it inherently lacks a way to account for the order of words in a sequence, requiring the injection of 'positional encodings'. Additionally, single-headed attention has the limitation of being overly dominated by the current word itself, which is solved by introducing 'multi-headed' attention to create multiple representation subspaces.",
+      "notes": "Tests whether the wiki captured nuanced/negative information, not just positive claims."
+    },
+    {
+      "id": "q07",
+      "type": "edge_case",
+      "question": "What happened in 1823 related to this topic?",
+      "reference_answer": null,
+      "expected_behaviour": "The model should say it cannot find this information in the wiki, not hallucinate an answer.",
+      "notes": "Hallucination test. Correct answer is an explicit 'I don't know'."
+    },
+    {
+      "id": "q08",
+      "type": "edge_case",
+      "question": "Who is the lead author of all the papers in the wiki?",
+      "reference_answer": null,
+      "expected_behaviour": "Should either give the correct author if present, or explicitly say the information is not in the wiki.",
+      "notes": "Tests whether the model avoids making up specific attributions."
+    }
+  ]
+}
